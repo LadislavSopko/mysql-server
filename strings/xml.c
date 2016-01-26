@@ -112,8 +112,14 @@ my_xml_parser_prefix_cmp(MY_XML_PARSER *p, const char *s, size_t slen)
   return (p->cur + slen > p->end) || memcmp(p->cur, s, slen);
 }
 
-
-static int my_xml_scan(MY_XML_PARSER *p,MY_XML_ATTR *a)
+/*
+	added bool question which will permit relaxed IDENT parser (it will permit start with '1234567890' chars)
+	this is just original my_xml_scan function with new parameter
+	due to c don't permit default param values
+	there is new my_xml_scan function which just call this with question = 0
+	so we maintain all old calls correct
+*/
+static int my_xml_scan_ext(MY_XML_PARSER *p,MY_XML_ATTR *a, int question)
 {
   int lex;
   
@@ -180,7 +186,7 @@ static int my_xml_scan(MY_XML_PARSER *p,MY_XML_ATTR *a)
       my_xml_norm_text(a);
     lex=MY_XML_STRING;
   }
-  else if (my_xml_is_id0(p->cur[0]))
+  else if (my_xml_is_id0(p->cur[0]) || (1 == question && my_xml_is_id1(p->cur[0]))) //FIX: relaxed IDENT parser in case of Processing instruction
   {
     p->cur++;
     while (p->cur < p->end && my_xml_is_id1(p->cur[0]))
@@ -200,6 +206,11 @@ ret:
   return lex;
 }
 
+//handle standard call
+static int my_xml_scan(MY_XML_PARSER *p,MY_XML_ATTR *a)
+{
+	return my_xml_scan_ext(p, a, 0);
+}
 
 static int my_xml_value(MY_XML_PARSER *st, const char *str, size_t len)
 {
@@ -375,7 +386,7 @@ int my_xml_parse(MY_XML_PARSER *p,const char *str, size_t len)
       }
       else if (MY_XML_QUESTION == lex)
       {
-        lex=my_xml_scan(p,&a);
+        lex=my_xml_scan_ext(p, &a, 1); // we send presence of question
         question=1;
       }
       
@@ -392,13 +403,13 @@ int my_xml_parse(MY_XML_PARSER *p,const char *str, size_t len)
         return MY_XML_ERROR;
       }
       
-      while ((MY_XML_IDENT == (lex=my_xml_scan(p,&a))) ||
+      while ((MY_XML_IDENT == (lex=my_xml_scan_ext(p, &a, question))) ||  //handle eventual relaxed IDENT parsing
              ((MY_XML_STRING == lex && exclam)))
       {
         MY_XML_ATTR b;
         if (MY_XML_EQ == (lex=my_xml_scan(p,&b)))
         {
-          lex=my_xml_scan(p,&b);
+          lex=my_xml_scan_ext(p, &b, question); // handle eventual IDENT relaxed parsing
           if ( (lex == MY_XML_IDENT) || (lex == MY_XML_STRING) )
           {
             p->current_node_type= MY_XML_NODE_ATTR;
@@ -438,7 +449,7 @@ int my_xml_parse(MY_XML_PARSER *p,const char *str, size_t len)
       {
         if (MY_XML_OK != my_xml_leave(p,NULL,0))
           return MY_XML_ERROR;
-        lex=my_xml_scan(p,&a);
+        lex=my_xml_scan(p,&a); //not relaxed we are in closing element
       }
       
 gt:
@@ -451,7 +462,7 @@ gt:
         }
         if (MY_XML_OK != my_xml_leave(p,NULL,0))
           return MY_XML_ERROR;
-        lex=my_xml_scan(p,&a);
+        lex=my_xml_scan_ext(p, &a, question); //next token can be relaxed IDENT
       }
       
       if (exclam)
