@@ -109,7 +109,7 @@ IF(MSVC)
    CMAKE_CXX_FLAGS_DEBUG_INIT
    )
    #STRING(REPLACE "/MD"  "/MT" "${flag}" "${${flag}}")
-   STRING(REPLACE "/Zi"  "/Z7" "${flag}" "${${flag}}")
+   #STRING(REPLACE "/Zi"  "/Z7" "${flag}" "${${flag}}")
    IF (NOT WIN_DEBUG_NO_INLINE)
      STRING(REPLACE "/Ob0"  "/Ob1" "${flag}" "${${flag}}")
    ENDIF()
@@ -131,6 +131,10 @@ IF(MSVC)
   # Speed up multiprocessor build
   SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /MP")
   SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /MP")
+  
+  # debug build
+  SET(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /bigobj")
+  SET(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /bigobj")
   
   #TODO: update the code and remove the disabled warnings
   SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /wd4800 /wd4805 /wd4996")
