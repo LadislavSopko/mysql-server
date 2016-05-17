@@ -3121,3 +3121,5 @@ client/mysql_ssl_rsa_setup
 
 # Allow
 !include/*/boost/geometry/*
+
+cmake/os/Windows.cmake.orig
