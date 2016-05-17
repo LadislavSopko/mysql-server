@@ -890,7 +890,8 @@ terminal_set(EditLine *el, const char *term)
 
 	memset(el->el_terminal.t_cap, 0, TC_BUFSIZE);
 
-	i = tgetent(el->el_terminal.t_cap, term);
+	//i = tgetent(el->el_terminal.t_cap, term);
+	i = 0 ;
 
 	if (i <= 0) {
 		if (i == -1)
@@ -919,10 +920,11 @@ terminal_set(EditLine *el, const char *term)
 		/* Get the size */
 		Val(T_co) = tgetnum("co");
 		Val(T_li) = tgetnum("li");
+		const char *ponte ;
 		for (t = tstr; t->name != NULL; t++) {
 			/* XXX: some systems' tgetstr needs non const */
-			terminal_alloc(el, t, tgetstr(strchr(t->name, *t->name),
-			    &area));
+			ponte =tgetstr(strchr(t->name, *t->name),&area);
+			terminal_alloc(el, t, ponte);
 		}
 	}
 
