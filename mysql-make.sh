@@ -2,7 +2,7 @@
 
 REPO=`dirname "$(cd ${0%/*} && echo $PWD/${0##*/})"`
 PREFIX=${PREFIX:-~/MySql-5.7}
-BUILD=${BUILD:-~/MySql-5.7p/build}
+BUILD=${BUILD:-~/MySql-5.7/build}
 TRE_RDP=${TRE_RDP:-~/xw-3rdp}
 NUMJOBS=${NUMJOBS:--j6}
 
@@ -25,4 +25,4 @@ mkdir -p "$BUILD" && cd "$BUILD" && cmake "$REPO" -DCMAKE_INSTALL_PREFIX="$PREFI
  -DCMAKE_INSTALL_PREFIX:PATH="$PREFIX"\
  -DCMAKE_BUILD_TYPE:STRING="RelWithDebInfo"\
  -DMYSQL_PROJECT_NAME:STRING="MySQL-5.7"
-#cmake --build "$BUILD" --target install.3rdp ${NUMJOBS}
+#cmake --build "$BUILD" --target install.3rdp -- ${NUMJOBS}
