@@ -890,7 +890,9 @@ terminal_set(EditLine *el, const char *term)
 
 	memset(el->el_terminal.t_cap, 0, TC_BUFSIZE);
 
-	i = tgetent(el->el_terminal.t_cap, term);
+	//Laco: fix linux crash
+	//i = tgetent(el->el_terminal.t_cap, term);
+	i = 0;
 
 	if (i <= 0) {
 		if (i == -1)
