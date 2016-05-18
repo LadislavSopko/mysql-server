@@ -5,6 +5,10 @@ set CMAKE_DIR=C:\Program Files (x86)\CMake\bin
 set REPO=%~dp0
 set REPO=%REPO:~0,-1%
 
+REM set path to jom
+
+set PATH=%REPO%;%PATH%
+
 if "%3"=="" goto blank_3rdp
 
 set TRE_RDP=%~3
@@ -35,7 +39,7 @@ set PREFIX=E:\MySql
 
 :next 
 
-set NUMJOBS=--j6
+set NUMJOBS=-j6
 
 mkdir "%BUILD%"
 
@@ -43,7 +47,7 @@ if not exist "%PREFIX%"\bin mkdir "%PREFIX%"\bin
 
 copy "%REPO%\utils\cvs.exe" "%PREFIX%"\bin
 
-cd /d "%BUILD%" && "%CMAKE_DIR%\cmake" "%REPO%" -G"NMake Makefiles"^
+cd /d "%BUILD%" && "%CMAKE_DIR%\cmake" "%REPO%" -G"NMake Makefiles JOM"^
  -DCMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_NO_WARNINGS:BOOL=1^
  -DWITH_EMBEDDED_SERVER:BOOL=0^
  -DCOMMUNITY_BUILD:BOOL=1^
@@ -61,8 +65,10 @@ cd /d "%BUILD%" && "%CMAKE_DIR%\cmake" "%REPO%" -G"NMake Makefiles"^
  -DCMAKE_INSTALL_PREFIX:PATH="%PREFIX%"^
  -DCMAKE_BUILD_TYPE:STRING="RelWithDebInfo"^
  -DMYSQL_PROJECT_NAME:STRING="MySQL"
+
+REM maby parallel compile
+set CL=/MP
  
-"%CMAKE_DIR%\cmake" --build "%BUILD%" %NUMJOBS%
-::--target install.3rdp
+"%CMAKE_DIR%\cmake" --build "%BUILD%" --target INSTALL -- "%NUMJOBS%"
 
 endlocal
