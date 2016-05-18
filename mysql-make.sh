@@ -25,4 +25,4 @@ mkdir -p "$BUILD" && cd "$BUILD" && cmake "$REPO" -DCMAKE_INSTALL_PREFIX="$PREFI
  -DCMAKE_INSTALL_PREFIX:PATH="$PREFIX"\
  -DCMAKE_BUILD_TYPE:STRING="RelWithDebInfo"\
  -DMYSQL_PROJECT_NAME:STRING="MySQL-5.7"
-#cmake --build "$BUILD" --target install.3rdp -- ${NUMJOBS}
+cmake --build "$BUILD" --target INSTALL -- ${NUMJOBS}
