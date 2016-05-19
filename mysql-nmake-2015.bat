@@ -66,9 +66,8 @@ cd /d "%BUILD%" && "%CMAKE_DIR%\cmake" "%REPO%" -G"NMake Makefiles JOM"^
  -DCMAKE_BUILD_TYPE:STRING="RelWithDebInfo"^
  -DMYSQL_PROJECT_NAME:STRING="MySQL"
 
-REM maby parallel compile
-set CL=/MP
- 
-"%CMAKE_DIR%\cmake" --build "%BUILD%" --target INSTALL -- "%NUMJOBS%"
+rem "%CMAKE_DIR%\cmake" --build "%BUILD%" --target INSTALL -- "%NUMJOBS%"
+pushd "%BUILD%\libservices" && jom install "%NUMJOBS%"  && popd
+pushd "%BUILD%\sql" && jom install "%NUMJOBS%" && copy mysqld.lib "%PREFIX%"\lib && popd
 
 endlocal
