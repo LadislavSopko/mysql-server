@@ -9,7 +9,7 @@ REM set path to jom
 
 set PATH=%REPO%;%PATH%
 
-if "%4"=="" goto blank_cmake
+if "%~4"=="" goto blank_cmake
 
 set CMAKE_COMMAND=%~4
 
@@ -20,7 +20,7 @@ set CMAKE_COMMAND=C:\Program Files (x86)\CMake\bin\cmake
 
 :next_cmake
 
-if "%3"=="" goto blank_3rdp
+if "%~3"=="" goto blank_3rdp
 
 set TRE_RDP=%~3
 goto next_3rdp
@@ -30,7 +30,7 @@ set TRE_RDP=C:\TRERDP_vc14\xw-3rdp
 
 :next_3rdp
 
-if "%2"=="" goto blank_build
+if "%~2"=="" goto blank_build
 
 set BUILD=%~2
 goto next_build
@@ -40,7 +40,7 @@ set BUILD=E:\MySql\build
 
 :next_build
 
-if "%1"=="" goto blank
+if "%~1"=="" goto blank
 
 set PREFIX=%~1
 goto next
