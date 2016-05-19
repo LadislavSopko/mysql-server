@@ -1,13 +1,24 @@
 @echo on
 setlocal
 
-set CMAKE_DIR=C:\Program Files (x86)\CMake\bin
+
 set REPO=%~dp0
 set REPO=%REPO:~0,-1%
 
 REM set path to jom
 
 set PATH=%REPO%;%PATH%
+
+if "%4"=="" goto blank_cmake
+
+set CMAKE_COMMAND=%~4
+
+goto next_cmake
+
+:blank_cmake
+set CMAKE_COMMAND=C:\Program Files (x86)\CMake\bin\cmake
+
+:next_cmake
 
 if "%3"=="" goto blank_3rdp
 
@@ -39,15 +50,13 @@ set PREFIX=E:\MySql
 
 :next 
 
-set NUMJOBS=-j6
+set NUMJOBS=-j4
 
 mkdir "%BUILD%"
 
 if not exist "%PREFIX%"\bin mkdir "%PREFIX%"\bin
 
-copy "%REPO%\utils\cvs.exe" "%PREFIX%"\bin
-
-cd /d "%BUILD%" && "%CMAKE_DIR%\cmake" "%REPO%" -G"NMake Makefiles JOM"^
+cd /d "%BUILD%" && "%CMAKE_COMMAND%" "%REPO%" -G"NMake Makefiles JOM"^
  -DCMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_NO_WARNINGS:BOOL=1^
  -DWITH_EMBEDDED_SERVER:BOOL=0^
  -DCOMMUNITY_BUILD:BOOL=1^
