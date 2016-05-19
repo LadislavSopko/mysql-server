@@ -7,7 +7,7 @@ set REPO=%REPO:~0,-1%
 
 REM set path to jom
 
-set PATH=%REPO%;%PATH%
+rem set PATH=%TRE_RDP%\bin;%PATH%
 
 set P1=%~1
 set P2=%~2
@@ -59,7 +59,7 @@ set NUMJOBS=-j4
 
 mkdir "%BUILD%"
 
-if not exist "%PREFIX%"\bin mkdir "%PREFIX%"\bin
+set PATH=%TRE_RDP%\bin;%PATH%
 
 cd /d "%BUILD%" && "%CMAKE_COMMAND%" "%REPO%" -G"NMake Makefiles JOM"^
  -DCMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_NO_WARNINGS:BOOL=1^
@@ -81,7 +81,7 @@ cd /d "%BUILD%" && "%CMAKE_COMMAND%" "%REPO%" -G"NMake Makefiles JOM"^
  -DMYSQL_PROJECT_NAME:STRING="MySQL"
 
 rem "%CMAKE_DIR%\cmake" --build "%BUILD%" --target INSTALL -- "%NUMJOBS%"
-pushd "%BUILD%\libservices" && jom install "%NUMJOBS%"  && popd
-pushd "%BUILD%\sql" && jom install "%NUMJOBS%" && copy mysqld.lib "%PREFIX%"\lib && popd
+pushd "%BUILD%\libservices" && "%TRE_RDP%\bin\jom" install "%NUMJOBS%"  && popd
+pushd "%BUILD%\sql" && "%TRE_RDP%\bin\jom" install "%NUMJOBS%" && copy mysqld.lib "%PREFIX%"\lib && popd
 
 endlocal
