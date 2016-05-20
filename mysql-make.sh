@@ -29,4 +29,6 @@ mkdir -p "$BUILD" && cd "$BUILD" && cmake "$REPO" -DCMAKE_INSTALL_PREFIX="$PREFI
  #full build 
  #cmake --build "$BUILD" --target install -- ${NUMJOBS}
 
- pushd "$BUILD"/libservices && make install && popd
+pushd "$BUILD"/libservices && make install && popd
+pushd "$BUILD"/libmysql && make install && popd
+pushd "$BUILD"/include && make install && popd
