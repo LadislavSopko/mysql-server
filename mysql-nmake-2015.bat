@@ -84,5 +84,6 @@ rem "%CMAKE_DIR%\cmake" --build "%BUILD%" --target INSTALL -- "%NUMJOBS%"
 pushd "%BUILD%\libservices" && "%TRE_RDP%\bin\jom" install "%NUMJOBS%"  && popd
 pushd "%BUILD%\sql" && "%TRE_RDP%\bin\jom" install "%NUMJOBS%" && copy mysqld.lib "%PREFIX%"\lib && popd
 pushd "%BUILD%\libmysql" && "%TRE_RDP%\bin\jom" install "%NUMJOBS%" && popd
+pushd "%BUILD%\include" && "%TRE_RDP%\bin\jom" install "%NUMJOBS%" && popd
 
 endlocal
