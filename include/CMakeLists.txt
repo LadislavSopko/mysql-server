@@ -34,7 +34,6 @@ SET(HEADERS_ABI
   mysql/plugin_validate_password.h
   mysql/plugin_keyring.h
   mysql/plugin_group_replication.h
-  violite.h
 )
 
 SET(HEADERS 
