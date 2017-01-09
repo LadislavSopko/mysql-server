@@ -19,6 +19,7 @@
 #include "field.h"       // Derivation
 #include "parse_tree_node_base.h" // Parse_tree_node
 #include "sql_array.h"   // Bounds_checked_array
+#include "template_utils.h" // pointer_cast
 #include "trigger_def.h" // enum_trigger_variable_type
 #include "table_trigger_field_support.h" // Table_trigger_field_support
 #include "mysql/service_parser.h"
@@ -1865,7 +1866,31 @@ public:
   virtual bool change_context_processor(uchar *context) { return false; }
   virtual bool reset_query_id_processor(uchar *query_id_arg) { return false; }
   virtual bool find_item_processor(uchar *arg) { return this == (void *) arg; }
+  /**
+    Mark underlying field in read or write map of a table.
+
+    @param arg        Mark_field object
+  */
   virtual bool mark_field_in_map(uchar *arg) { return false; }
+protected:
+  /**
+    Helper function for mark_field_in_map(uchar *arg).
+
+    @param mark_field Mark_field object
+    @param field      Field to be marked for read/write
+  */
+  static inline bool mark_field_in_map(Mark_field *mark_field, Field* field)
+  {
+    TABLE *table= mark_field->table;
+    if (table != NULL && table != field->table)
+      return false;
+
+    table= field->table;
+    table->mark_column_used(table->in_use, field, mark_field->mark);
+
+    return false;
+  }
+public:
   /**
     Return used table information for the specified query block (level).
     For a field that is resolved from this query block, return the table number.
@@ -2043,6 +2068,16 @@ public:
   */
   virtual bool check_gcol_func_processor(uchar *int_arg)
   { return true; }
+
+  /**
+    Check if a generated expression depends on DEFAULT function.
+
+    @param arg ignored
+
+    @returns false if the function is not DEFAULT(), otherwise true.
+  */
+  virtual bool check_gcol_depend_default_processor(uchar *arg)
+  { return false; }
 
   /**
     @brief  update_indexed_column_map
@@ -2251,6 +2286,14 @@ public:
     const Type t= type();
     return t == FUNC_ITEM || t == COND_ITEM;
   }
+
+  /**
+    This function applies only to Item_field objects referred to by an Item_ref
+    object that has been marked as a const_item.
+
+    @param arg  Keep track of whether an Item_ref refers to an Item_field.
+  */
+  virtual bool repoint_const_outer_ref(uchar *arg) { return false; }
 private:
   virtual bool subq_opt_away_processor(uchar *arg) { return false; }
 };
@@ -2883,7 +2926,10 @@ public:
   bool remove_column_from_bitmap(uchar * arg);
   bool find_item_in_field_list_processor(uchar *arg);
   bool check_gcol_func_processor(uchar *int_arg);
-  bool mark_field_in_map(uchar *arg);
+  bool mark_field_in_map(uchar *arg)
+  {
+    return Item::mark_field_in_map(pointer_cast<Mark_field *>(arg), field);
+  }
   bool used_tables_for_level(uchar *arg);
   bool check_column_privileges(uchar *arg);
   bool check_partition_func_processor(uchar *int_arg) { return false; }
@@ -2977,7 +3023,9 @@ public:
   { return m_alias_of_expr ||
       // maybe the qualifying table was given an alias ("t1 AS foo"):
       (field ? field->table->alias_name_used : false);
- }
+  }
+
+  bool repoint_const_outer_ref(uchar *arg);
 };
 
 class Item_null :public Item_basic_constant
@@ -4179,6 +4227,8 @@ public:
   {
     return (*ref)->created_by_in2exists();
   }
+
+  bool repoint_const_outer_ref(uchar *arg);
 };
 
 
@@ -4325,10 +4375,10 @@ public:
   */
   bool found_in_select_list;
   Item_outer_ref(Name_resolution_context *context_arg,
-                 Item_field *outer_field_arg)
-    :Item_direct_ref(context_arg, 0, outer_field_arg->table_name,
-                     outer_field_arg->field_name),
-    outer_ref(outer_field_arg), in_sum_func(0),
+                 Item_ident *ident_arg)
+    :Item_direct_ref(context_arg, 0, ident_arg->table_name,
+                     ident_arg->field_name),
+    outer_ref(ident_arg), in_sum_func(0),
     found_in_select_list(0)
   {
     ref= &outer_ref;
@@ -4909,6 +4959,9 @@ public:
            (arg && arg->walk(processor, walk, args)) ||
            ((walk & WALK_POSTFIX) && (this->*processor)(args));
   }
+
+  bool check_gcol_depend_default_processor(uchar *arg)
+  { return true; }
 
   Item *transform(Item_transformer transformer, uchar *args);
 };

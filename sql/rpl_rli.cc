@@ -79,7 +79,8 @@ Relay_log_info::Relay_log_info(bool is_slave_recovery
    cur_log_fd(-1), relay_log(&sync_relaylog_period, SEQ_READ_APPEND),
    is_relay_log_recovery(is_slave_recovery),
    save_temporary_tables(0),
-   cur_log_old_open_count(0), group_relay_log_pos(0), event_relay_log_number(0),
+   cur_log_old_open_count(0), error_on_rli_init_info(false),
+   group_relay_log_pos(0), event_relay_log_number(0),
    event_relay_log_pos(0), event_start_pos(0),
    group_master_log_pos(0),
    gtid_set(global_sid_map, global_sid_lock),
@@ -114,9 +115,9 @@ Relay_log_info::Relay_log_info(bool is_slave_recovery
    reported_unsafe_warning(false), rli_description_event(NULL),
    commit_order_mngr(NULL),
    sql_delay(0), sql_delay_end(0), m_flags(0), row_stmt_start_timestamp(0),
-   long_find_row_note_printed(false), error_on_rli_init_info(false),
+   long_find_row_note_printed(false),
    thd_tx_priority(0),
-   is_native_trx_detached(false)
+   is_engine_ha_data_detached(false)
 {
   DBUG_ENTER("Relay_log_info::Relay_log_info");
 
@@ -1537,9 +1538,7 @@ bool Relay_log_info::is_until_satisfied(THD *thd, Log_event *ev)
     break;
 
   case UNTIL_SQL_AFTER_MTS_GAPS:
-#ifndef DBUG_OFF
   case UNTIL_DONE:
-#endif
     /*
       TODO: this condition is actually post-execution or post-scheduling
             so the proper place to check it before SQL thread goes
@@ -1554,9 +1553,7 @@ bool Relay_log_info::is_until_satisfied(THD *thd, Log_event *ev)
                             "UNTIL SQL_AFTER_MTS_GAPS as it has "
                             "processed all gap transactions left from "
                             "the previous slave session.");
-#ifndef DBUG_OFF
       until_condition= UNTIL_DONE;
-#endif
       DBUG_RETURN(true);
     }
     else
@@ -1725,7 +1722,24 @@ void Relay_log_info::cleanup_context(THD *thd, bool error)
   m_table_map.clear_tables();
   slave_close_thread_tables(thd);
   if (error)
+  {
+    /*
+      trans_rollback above does not rollback XA transactions.
+      It could be done only after necessarily closing tables which dictates
+      the following placement.
+    */
+    XID_STATE *xid_state= thd->get_transaction()->xid_state();
+    if (!xid_state->has_state(XID_STATE::XA_NOTR))
+    {
+      DBUG_ASSERT(DBUG_EVALUATE_IF("simulate_commit_failure",1,
+                                   xid_state->has_state(XID_STATE::XA_ACTIVE)));
+
+      xa_trans_force_rollback(thd);
+      xid_state->reset();
+      cleanup_trans_state(thd);
+    }
     thd->mdl_context.release_transactional_locks();
+  }
   clear_flag(IN_STMT);
   /*
     Cleanup for the flags that have been set at do_apply_event.
@@ -2260,7 +2274,11 @@ a file name for --relay-log-index option.", opt_relaylog_index_name);
     goto err;
   }
 
-  is_relay_log_recovery= FALSE;
+  /*
+    In case of MTS the recovery is deferred until the end of global_init_info.
+  */
+  if (!mi->rli->mts_recovery_group_cnt)
+    is_relay_log_recovery= FALSE;
   DBUG_RETURN(error);
 
 err:
@@ -2890,4 +2908,16 @@ enum_return_status Relay_log_info::add_gtid_set(const Gtid_set *gtid_set)
   enum_return_status return_status= this->gtid_set.add_gtid_set(gtid_set);
 
   DBUG_RETURN(return_status);
+}
+
+void Relay_log_info::detach_engine_ha_data(THD *thd)
+{
+  is_engine_ha_data_detached= true;
+    /*
+      In case of slave thread applier or processing binlog by client,
+      detach the engine ha_data ("native" engine transaction)
+      in favor of dynamically created.
+    */
+  plugin_foreach(thd, detach_native_trx,
+                 MYSQL_STORAGE_ENGINE_PLUGIN, NULL);
 }

@@ -916,6 +916,8 @@ struct handlerton
                               lock is to be acquired/was released.
     @param notification_type  Indicates whether this is pre-acquire or
                               post-release notification.
+    @param victimized        'true' if locking failed as we were selected
+                              as a victim in order to avoid possible deadlocks.
 
     @note Notification is done only for objects from TABLESPACE, SCHEMA,
           TABLE, FUNCTION, PROCEDURE, TRIGGER and EVENT namespaces.
@@ -937,7 +939,8 @@ struct handlerton
             True - if it has failed/lock should not be acquired.
   */
   bool (*notify_exclusive_mdl)(THD *thd, const MDL_key *mdl_key,
-                               ha_notification_type notification_type);
+                               ha_notification_type notification_type,
+                               bool *victimized);
 
   /**
     Notify/get permission from storage engine before or after execution of
@@ -3601,7 +3604,7 @@ private:
       @retval    0  Success.
       @retval != 0  Error code.
   */
-  virtual int write_row(uchar *buf __attribute__((unused)))
+  virtual int write_row(uchar *buf MY_ATTRIBUTE((unused)))
   {
     return HA_ERR_WRONG_COMMAND;
   }
@@ -3614,13 +3617,13 @@ private:
     the columns required for the error message are not read, the error
     message will contain garbage.
   */
-  virtual int update_row(const uchar *old_data __attribute__((unused)),
-                         uchar *new_data __attribute__((unused)))
+  virtual int update_row(const uchar *old_data MY_ATTRIBUTE((unused)),
+                         uchar *new_data MY_ATTRIBUTE((unused)))
   {
     return HA_ERR_WRONG_COMMAND;
   }
 
-  virtual int delete_row(const uchar *buf __attribute__((unused)))
+  virtual int delete_row(const uchar *buf MY_ATTRIBUTE((unused)))
   {
     return HA_ERR_WRONG_COMMAND;
   }
@@ -3653,8 +3656,8 @@ private:
     @return  non-0 in case of failure, 0 in case of success.
     When lock_type is F_UNLCK, the return value is ignored.
   */
-  virtual int external_lock(THD *thd __attribute__((unused)),
-                            int lock_type __attribute__((unused)))
+  virtual int external_lock(THD *thd MY_ATTRIBUTE((unused)),
+                            int lock_type MY_ATTRIBUTE((unused)))
   {
     return 0;
   }
@@ -4121,10 +4124,12 @@ void ha_set_normalized_disabled_se_str(const std::string &disabled_se_str);
 bool ha_is_storage_engine_disabled(handlerton *se_engine);
 
 bool ha_notify_exclusive_mdl(THD *thd, const MDL_key *mdl_key,
-                             ha_notification_type notification_type);
+                             ha_notification_type notification_type,
+                             bool *victimized);
 bool ha_notify_alter_table(THD *thd, const MDL_key *mdl_key,
                            ha_notification_type notification_type);
 
 int commit_owned_gtids(THD *thd, bool all, bool *need_clear_ptr);
+int commit_owned_gtid_by_partial_command(THD *thd);
 
 #endif /* HANDLER_INCLUDED */

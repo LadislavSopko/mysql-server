@@ -337,7 +337,7 @@ inline int idempotent_error_code(int err_code)
   Ignore error code specified on command line.
 */
 
-inline int ignored_error_code(int err_code)
+int ignored_error_code(int err_code)
 {
   return ((err_code == ER_SLAVE_IGNORED_TABLE) ||
           (use_slave_mask && bitmap_is_set(&slave_error_mask, err_code)));
@@ -1128,12 +1128,14 @@ int Log_event::read_log_event(IO_CACHE* file, String* packet,
                               mysql_mutex_t* log_lock,
                               enum_binlog_checksum_alg checksum_alg_arg,
                               const char *log_file_name_arg,
-                              bool* is_binlog_active)
+                              bool* is_binlog_active,
+                              char *event_header)
 {
 
   ulong data_len;
   int result=0;
-  char buf[LOG_EVENT_MINIMAL_HEADER_LEN];
+  char local_buf[LOG_EVENT_MINIMAL_HEADER_LEN];
+  char *buf= event_header != NULL ? event_header : local_buf;
   uchar ev_offset= packet->length();
   DBUG_ENTER("Log_event::read_log_event(IO_CACHE *, String *, mysql_mutex_t, uint8)");
 
@@ -1143,20 +1145,27 @@ int Log_event::read_log_event(IO_CACHE* file, String* packet,
   if (log_file_name_arg)
     *is_binlog_active= mysql_bin_log.is_active(log_file_name_arg);
 
-  if (my_b_read(file, (uchar*) buf, sizeof(buf)))
+  /* If the event header wasn't passed, we need to read it. */
+  if (buf == local_buf)
   {
-    /*
-      If the read hits eof, we must report it as eof so the caller
-      will know it can go into cond_wait to be woken up on the next
-      update to the log.
-    */
-    DBUG_PRINT("error",("my_b_read failed. file->error: %d", file->error));
-    if (!file->error)
-      result= LOG_READ_EOF;
-    else
-      result= (file->error > 0 ? LOG_READ_TRUNC : LOG_READ_IO);
-    goto end;
+    if (my_b_read(file, (uchar*) buf, LOG_EVENT_MINIMAL_HEADER_LEN))
+    {
+      /*
+        If the read hits eof, we must report it as eof so the caller
+        will know it can go into cond_wait to be woken up on the next
+        update to the log.
+      */
+      DBUG_PRINT("error",("my_b_read failed. file->error: %d", file->error));
+      if (!file->error)
+        result= LOG_READ_EOF;
+      else
+        result= (file->error > 0 ? LOG_READ_TRUNC : LOG_READ_IO);
+      goto end;
+    }
   }
+  else
+    DBUG_PRINT("info",("Skipped reading the event header. Using the provided one."));
+
   data_len= uint4korr(buf + EVENT_LEN_OFFSET);
   if (data_len < LOG_EVENT_MINIMAL_HEADER_LEN ||
       data_len > max(current_thd->variables.max_allowed_packet,
@@ -1169,7 +1178,7 @@ int Log_event::read_log_event(IO_CACHE* file, String* packet,
   }
 
   /* Append the log event header to packet */
-  if (packet->append(buf, sizeof(buf)))
+  if (packet->append(buf, LOG_EVENT_MINIMAL_HEADER_LEN))
   {
     DBUG_PRINT("info", ("first packet->append failed (out of memory)"));
     /* Failed to allocate packet */
@@ -1214,7 +1223,7 @@ int Log_event::read_log_event(IO_CACHE* file, String* packet,
             debug_event_buf_c[EVENT_TYPE_OFFSET] != binary_log::PREVIOUS_GTIDS_LOG_EVENT &&
             debug_event_buf_c[EVENT_TYPE_OFFSET] != binary_log::GTID_LOG_EVENT)
         {
-          int debug_cor_pos = rand() % (data_len + sizeof(buf) -
+          int debug_cor_pos = rand() % (data_len + LOG_EVENT_MINIMAL_HEADER_LEN -
                               BINLOG_CHECKSUM_LEN);
           debug_event_buf_c[debug_cor_pos] =~ debug_event_buf_c[debug_cor_pos];
           DBUG_PRINT("info", ("Corrupt the event at Log_event::read_log_event: byte on position %d", debug_cor_pos));
@@ -1228,7 +1237,7 @@ int Log_event::read_log_event(IO_CACHE* file, String* packet,
 
       if (opt_master_verify_checksum &&
         Log_event_footer::event_checksum_test((uchar*)packet->ptr() + ev_offset,
-                                              data_len + sizeof(buf),
+                                              data_len + LOG_EVENT_MINIMAL_HEADER_LEN,
                                               checksum_alg_arg))
       {
         DBUG_PRINT("info", ("checksum test failed"));
@@ -1727,7 +1736,7 @@ Log_event* Log_event::read_log_event(const char* buf, uint event_len,
 
 void Log_event::print_header(IO_CACHE* file,
                              PRINT_EVENT_INFO* print_event_info,
-                             bool is_more __attribute__((unused)))
+                             bool is_more MY_ATTRIBUTE((unused)))
 {
   char llbuff[22];
   my_off_t hexdump_from= print_event_info->hexdump_from;
@@ -3968,7 +3977,8 @@ Query_log_event::Query_log_event(THD* thd_arg, const char* query_arg,
   if (cmd_can_generate_row_events)
   {
     cmd_must_go_to_trx_cache= cmd_must_go_to_trx_cache || using_trans;
-    if (cmd_must_go_to_trx_cache || stmt_has_updated_trans_table(thd) ||
+    if (cmd_must_go_to_trx_cache ||
+        stmt_has_updated_trans_table(thd->get_transaction()->ha_trx_info(Transaction_ctx::STMT)) ||
         thd->lex->is_mixed_stmt_unsafe(thd->in_multi_stmt_transaction_mode(),
                                        thd->variables.binlog_direct_non_trans_update,
                                        trans_has_updated_trans_table(thd),
@@ -4620,13 +4630,6 @@ int Query_log_event::do_apply_event(Relay_log_info const *rli,
         thd->is_slave_error= 1;
       }
       goto end;
-    }
-
-    if (is_query_prefix_match(STRING_WITH_LEN("XA START")) && !thd->is_error())
-    {
-      // detach the "native" thd's trx in favor of dynamically created
-      plugin_foreach(thd, detach_native_trx,
-                     MYSQL_STORAGE_ENGINE_PLUGIN, NULL);
     }
 
     /* If the query was not ignored, it is printed to the general log */
@@ -6595,6 +6598,7 @@ int Intvar_log_event::do_apply_event(Relay_log_info const *rli)
   switch (type) {
   case LAST_INSERT_ID_EVENT:
     thd->first_successful_insert_id_in_prev_stmt= val;
+    thd->substitute_null_with_insert_id= TRUE;
     break;
   case INSERT_ID_EVENT:
     thd->force_one_auto_inc_interval(val);
@@ -7195,8 +7199,6 @@ bool XA_prepare_log_event::do_commit(THD *thd)
     thd->lex->sql_command= SQLCOM_XA_PREPARE;
     thd->lex->m_sql_cmd= new Sql_cmd_xa_prepare(&xid);
     error= thd->lex->m_sql_cmd->execute(thd);
-    if (!error)
-      error|= applier_reset_xa_trans(thd);
   }
   else
   {
@@ -9993,9 +9995,6 @@ int Rows_log_event::do_index_scan_and_update(Relay_log_info const *rli)
   if ((error= unpack_current_row(rli, &m_cols)))
     goto end;
 
-  // Temporary fix to find out why it fails [/Matz]
-  memcpy(m_table->read_set->bitmap, m_cols.bitmap, (m_table->read_set->n_bits + 7) / 8);
-
   /*
     Trying to do an index scan without a usable key
     This is a valid state because we allow the user
@@ -10457,9 +10456,6 @@ int Rows_log_event::do_table_scan_and_update(Relay_log_info const *rli)
   prepare_record(table, &m_cols, FALSE);
   if (!(error= unpack_current_row(rli, &m_cols)))
   {
-    // Temporary fix to find out why it fails [/Matz]
-    memcpy(m_table->read_set->bitmap, m_cols.bitmap, (m_table->read_set->n_bits + 7) / 8);
-
     /** save a copy so that we can compare against it later */
     store_record(m_table, record[1]);
 
@@ -10543,6 +10539,7 @@ end:
 int Rows_log_event::do_apply_event(Relay_log_info const *rli)
 {
   DBUG_ENTER("Rows_log_event::do_apply_event(Relay_log_info*)");
+  TABLE *table= NULL;
   int error= 0;
 
   /*
@@ -10631,28 +10628,34 @@ int Rows_log_event::do_apply_event(Relay_log_info const *rli)
       uint actual_error= thd->get_stmt_da()->mysql_errno();
       if (thd->is_slave_error || thd->is_fatal_error)
       {
-        /*
-          Error reporting borrowed from Query_log_event with many excessive
-          simplifications. 
-          We should not honour --slave-skip-errors at this point as we are
-          having severe errors which should not be skiped.
-        */
-        rli->report(ERROR_LEVEL, actual_error,
-                    "Error executing row event: '%s'",
-                    (actual_error ? thd->get_stmt_da()->message_text() :
-                     "unexpected success or fatal error"));
-        thd->is_slave_error= 1;
+        if (ignored_error_code(actual_error))
+        {
+          if (log_warnings > 1)
+            rli->report(WARNING_LEVEL, actual_error,
+                        "Error executing row event: '%s'",
+                        (actual_error ? thd->get_stmt_da()->message_text() :
+                         "unexpected success or fatal error"));
+          thd->get_stmt_da()->reset_condition_info(thd);
+          clear_all_errors(thd, const_cast<Relay_log_info*>(rli));
+          error= 0;
+          goto end;
+        }
+        else
+        {
+          rli->report(ERROR_LEVEL, actual_error,
+                      "Error executing row event: '%s'",
+                      (actual_error ? thd->get_stmt_da()->message_text() :
+                       "unexpected success or fatal error"));
+          thd->is_slave_error= 1;
+          const_cast<Relay_log_info*>(rli)->slave_close_thread_tables(thd);
+          DBUG_RETURN(actual_error);
+        }
       }
-      const_cast<Relay_log_info*>(rli)->slave_close_thread_tables(thd);
-      DBUG_RETURN(actual_error);
     }
 
     /*
       When the open and locking succeeded, we check all tables to
       ensure that they still have the correct type.
-
-      We can use a down cast here since we know that every table added
-      to the tables_to_lock is a RPL_TABLE_LIST.
     */
 
     {
@@ -10671,10 +10674,37 @@ int Rows_log_event::do_apply_event(Relay_log_info const *rli)
         NOTE: The base tables are added here are removed when 
               close_thread_tables is called.
        */
-      RPL_TABLE_LIST *ptr= rli->tables_to_lock;
-      for (uint i= 0 ; ptr && (i < rli->tables_to_lock_count);
-           ptr= static_cast<RPL_TABLE_LIST*>(ptr->next_global), i++)
+      TABLE_LIST *table_list_ptr= rli->tables_to_lock;
+      for (uint i=0 ; table_list_ptr && (i < rli->tables_to_lock_count);
+           table_list_ptr= table_list_ptr->next_global, i++)
       {
+        /*
+          Below if condition takes care of skipping base tables that
+          make up the MERGE table (which are added by open_tables()
+          call). They are added next to the merge table in the list.
+          For eg: If RPL_TABLE_LIST is t3->t1->t2 (where t1 and t2
+          are base tables for merge table 't3'), open_tables will modify
+          the list by adding t1 and t2 again immediately after t3 in the
+          list (*not at the end of the list*). New table_to_lock list will
+          look like t3->t1'->t2'->t1->t2 (where t1' and t2' are TABLE_LIST
+          objects added by open_tables() call). There is no flag(or logic) in
+          open_tables() that can skip adding these base tables to the list.
+          So the logic here should take care of skipping them.
+
+          tables_to_lock_count logic will take care of skipping base tables
+          that are added at the end of the list.
+          For eg: If RPL_TABLE_LIST is t1->t2->t3, open_tables will modify
+          the list into t1->t2->t3->t1'->t2'. t1' and t2' will be skipped
+          because tables_to_lock_count logic in this for loop.
+        */
+        if (table_list_ptr->parent_l)
+          continue;
+        /*
+          We can use a down cast here since we know that every table added
+          to the tables_to_lock is a RPL_TABLE_LIST (or child table which is
+          skipped above).
+        */
+        RPL_TABLE_LIST *ptr= static_cast<RPL_TABLE_LIST*>(table_list_ptr);
         DBUG_ASSERT(ptr->m_tabledef_valid);
         TABLE *conv_table;
         if (!ptr->m_tabledef.compatible_with(thd, const_cast<Relay_log_info*>(rli),
@@ -10683,13 +10713,18 @@ int Rows_log_event::do_apply_event(Relay_log_info const *rli)
           DBUG_PRINT("debug", ("Table: %s.%s is not compatible with master",
                                ptr->table->s->db.str,
                                ptr->table->s->table_name.str));
-          /*
-            We should not honour --slave-skip-errors at this point as we are
-            having severe errors which should not be skiped.
-          */
-          thd->is_slave_error= 1;
-          const_cast<Relay_log_info*>(rli)->slave_close_thread_tables(thd);
-          DBUG_RETURN(ERR_BAD_TABLE_DEF);
+          if (thd->is_slave_error)
+          {
+            const_cast<Relay_log_info*>(rli)->slave_close_thread_tables(thd);
+            DBUG_RETURN(ERR_BAD_TABLE_DEF);
+          }
+          else
+          {
+            thd->get_stmt_da()->reset_condition_info(thd);
+            clear_all_errors(thd, const_cast<Relay_log_info*>(rli));
+            error= 0;
+            goto end;
+          }
         }
         DBUG_PRINT("debug", ("Table: %s.%s is compatible with master"
                              " - conv_table: %p",
@@ -10715,13 +10750,20 @@ int Rows_log_event::do_apply_event(Relay_log_info const *rli)
      */
     TABLE_LIST *ptr= rli->tables_to_lock;
     for (uint i=0 ;  ptr && (i < rli->tables_to_lock_count); ptr= ptr->next_global, i++)
+    {
+      /*
+        Please see comment in above 'for' loop to know the reason
+        for this if condition
+      */
+      if (ptr->parent_l)
+        continue;
       const_cast<Relay_log_info*>(rli)->m_table_map.set_table(ptr->table_id, ptr->table);
+    }
 
     query_cache.invalidate_locked_for_write(rli->tables_to_lock);
   }
 
-  TABLE* 
-    table= 
+  table=
     m_table= const_cast<Relay_log_info*>(rli)->m_table_map.get_table(m_table_id);
 
   DBUG_PRINT("debug", ("m_table: 0x%lx, m_table_id: %llu", (ulong) m_table,
@@ -10785,6 +10827,26 @@ int Rows_log_event::do_apply_event(Relay_log_info const *rli)
     if (get_general_type_code() == binary_log::DELETE_ROWS_EVENT ||
         get_general_type_code() == binary_log::UPDATE_ROWS_EVENT)
         bitmap_intersect(table->read_set,&m_cols);
+
+    /*
+      Call mark_generated_columns() to set read_set/write_set bits of the
+      virtual generated columns as required in order to get these computed.
+      This is needed since all columns need to have a value in the before
+      image for the record when doing the update (some storage engines will
+      use this for maintaining of secondary indexes). This call is required
+      even for DELETE events to set write_set bit in order to satisfy
+      ASSERTs in Field_*::store functions.
+
+      binlog_prepare_row_image() function, which will be called from
+      binlogging functions (binlog_update_row() and binlog_delete_row())
+      will take care of removing these spurious fields required during
+      execution but not needed for binlogging. In case of inserts, there
+      are no spurious fields (all generated columns are required to be written
+      into the binlog).
+    */
+
+    if (m_table->vfield)
+      m_table->mark_generated_columns(get_general_type_code() == binary_log::UPDATE_ROWS_EVENT);
 
     bitmap_set_all(table->write_set);
 
@@ -10958,15 +11020,30 @@ AFTER_MAIN_EXEC_ROW_LOOP:
     DBUG_RETURN(error);
   }
 
+end:
   if (get_flags(STMT_END_F))
   {
-   if((error= rows_event_stmt_cleanup(rli, thd)))
-    slave_rows_error_report(ERROR_LEVEL,
-                            thd->is_error() ? 0 : error,
-                            rli, thd, table,
-                            get_type_str(),
-                            const_cast<Relay_log_info*>(rli)->get_rpl_log_name(),
-                            (ulong) common_header->log_pos);
+    if((error= rows_event_stmt_cleanup(rli, thd)))
+    {
+      if (table)
+        slave_rows_error_report(ERROR_LEVEL,
+                                thd->is_error() ? 0 : error,
+                                rli, thd, table,
+                                get_type_str(),
+                                const_cast<Relay_log_info*>(rli)->get_rpl_log_name(),
+                                (ulong) common_header->log_pos);
+      else
+      {
+        rli->report(ERROR_LEVEL,
+                    thd->is_error() ? thd->get_stmt_da()->mysql_errno() : error,
+                    "Error in cleaning up after an event of type:%s; %s; the group"
+                    " log file/position: %s %lu", get_type_str(),
+                    thd->is_error() ? thd->get_stmt_da()->message_text() :
+                    "unexpected error",
+                    const_cast<Relay_log_info*>(rli)->get_rpl_log_name(),
+                    (ulong) common_header->log_pos);
+      }
+    }
    /* We are at end of the statement (STMT_END_F flag), lets clean
      the memory which was used from thd's mem_root now.
      This needs to be done only if we are here in SQL thread context.
@@ -11008,6 +11085,11 @@ Rows_log_event::do_shall_skip(Relay_log_info *rli)
 
 static int rows_event_stmt_cleanup(Relay_log_info const *rli, THD * thd)
 {
+  DBUG_EXECUTE_IF("simulate_rows_event_cleanup_failure",
+                  {
+                  my_error(ER_ERROR_DURING_COMMIT, MYF(0), 1);
+                  return (1);
+                  });
   int error;
   {
     /*
@@ -11064,6 +11146,12 @@ static int rows_event_stmt_cleanup(Relay_log_info const *rli, THD * thd)
     thd->reset_current_stmt_binlog_format_row();
 
     const_cast<Relay_log_info*>(rli)->cleanup_context(thd, 0);
+
+    /*
+      Clean sql_command value
+    */
+    thd->lex->sql_command= SQLCOM_END;
+
   }
   return error;
 }
@@ -11832,6 +11920,16 @@ Write_rows_log_event::do_before_row_operations(const Slave_reporting_capability 
   if (get_flags(STMT_END_F))
     thd->status_var.com_stat[SQLCOM_INSERT]++;
 
+  /*
+    Let storage engines treat this event as an INSERT command.
+
+    Set 'sql_command' as SQLCOM_INSERT after the tables are locked.
+    When locking the tables, it should be SQLCOM_END.
+    THD::decide_binlog_format which is called from "lock tables"
+    assumes that row_events will have 'sql_command' as SQLCOM_END.
+  */
+  thd->lex->sql_command= SQLCOM_INSERT;
+
   /**
      todo: to introduce a property for the event (handler?) which forces
      applying the event in the replace (idempotent) fashion.
@@ -12365,6 +12463,17 @@ Delete_rows_log_event::do_before_row_operations(const Slave_reporting_capability
    */
   if (get_flags(STMT_END_F))
     thd->status_var.com_stat[SQLCOM_DELETE]++;
+
+  /*
+    Let storage engines treat this event as a DELETE command.
+
+    Set 'sql_command' as SQLCOM_UPDATE after the tables are locked.
+    When locking the tables, it should be SQLCOM_END.
+    THD::decide_binlog_format which is called from "lock tables"
+    assumes that row_events will have 'sql_command' as SQLCOM_END.
+  */
+  thd->lex->sql_command= SQLCOM_DELETE;
+
   error= row_operations_scan_and_key_setup();
   DBUG_RETURN(error);
 
@@ -12484,6 +12593,17 @@ Update_rows_log_event::do_before_row_operations(const Slave_reporting_capability
   */
   if (get_flags(STMT_END_F))
     thd->status_var.com_stat[SQLCOM_UPDATE]++;
+
+  /*
+    Let storage engines treat this event as an UPDATE command.
+
+    Set 'sql_command' as SQLCOM_UPDATE after the tables are locked.
+    When locking the tables, it should be SQLCOM_END.
+    THD::decide_binlog_format which is called from "lock tables"
+    assumes that row_events will have 'sql_command' as SQLCOM_END.
+   */
+  thd->lex->sql_command= SQLCOM_UPDATE;
+
   error= row_operations_scan_and_key_setup();
   DBUG_RETURN(error);
 
@@ -12529,10 +12649,6 @@ Update_rows_log_event::do_exec_row(const Relay_log_info *const rli)
   DBUG_PRINT("info",("Updating row in table"));
   DBUG_DUMP("old record", m_table->record[1], m_table->s->reclength);
   DBUG_DUMP("new values", m_table->record[0], m_table->s->reclength);
-
-  // Temporary fix to find out why it fails [/Matz]
-  memcpy(m_table->read_set->bitmap, m_cols.bitmap, (m_table->read_set->n_bits + 7) / 8);
-  memcpy(m_table->write_set->bitmap, m_cols_ai.bitmap, (m_table->write_set->n_bits + 7) / 8);
 
   m_table->mark_columns_per_binlog_row_image();
   error= m_table->file->ha_update_row(m_table->record[1], m_table->record[0]);
@@ -13241,26 +13357,16 @@ Transaction_context_log_event(const char *server_uuid_arg,
   sid_map= new Sid_map(NULL);
   snapshot_version= new Gtid_set(sid_map);
 
-  global_sid_lock->wrlock();
   /*
-    Copy global_sid_map to a local copy to avoid that all
-    certification operations on top of this snapshot version do
-    require that global_sid_lock is acquired.
+    Copy global_sid_map to a local copy to avoid the acquisition
+    of the global_sid_lock for operations on top of this snapshot
+    version.
+    The Sid_map and Gtid_executed must be read under the protection
+    of MYSQL_BIN_LOG.LOCK_commit to avoid race conditions between
+    ordered commits in the storage engine and gtid_state update.
   */
-  enum_return_status return_status= global_sid_map->copy(sid_map);
-  if (return_status != RETURN_STATUS_OK)
-  {
-    global_sid_lock->unlock();
+  if (mysql_bin_log.get_gtid_executed(sid_map, snapshot_version))
     goto err;
-  }
-
-  return_status= snapshot_version->add_gtid_set(gtid_state->get_executed_gtids());
-  if (return_status != RETURN_STATUS_OK)
-  {
-    global_sid_lock->unlock();
-    goto err;
-  }
-  global_sid_lock->unlock();
 
   server_uuid= my_strdup(key_memory_log_event, server_uuid_arg, MYF(MY_WME));
   if (server_uuid == NULL)
@@ -13391,11 +13497,11 @@ bool Transaction_context_log_event::write_data_header(IO_CACHE* file)
   char buf[Binary_log_event::TRANSACTION_CONTEXT_HEADER_LEN];
 
   buf[ENCODED_SERVER_UUID_LEN_OFFSET] = (char) strlen(server_uuid);
-  int8store(buf + ENCODED_THREAD_ID_OFFSET, thread_id);
+  int4store(buf + ENCODED_THREAD_ID_OFFSET, thread_id);
   buf[ENCODED_GTID_SPECIFIED_OFFSET] = gtid_specified;
   int4store(buf + ENCODED_SNAPSHOT_VERSION_LEN_OFFSET, get_snapshot_version_size());
-  int2store(buf + ENCODED_WRITE_SET_ITEMS_OFFSET, write_set.size());
-  int2store(buf + ENCODED_READ_SET_ITEMS_OFFSET, read_set.size());
+  int4store(buf + ENCODED_WRITE_SET_ITEMS_OFFSET, write_set.size());
+  int4store(buf + ENCODED_READ_SET_ITEMS_OFFSET, read_set.size());
   DBUG_RETURN(wrapper_my_b_safe_write(file, (const uchar *) buf,
                                       Binary_log_event::TRANSACTION_CONTEXT_HEADER_LEN));
 }

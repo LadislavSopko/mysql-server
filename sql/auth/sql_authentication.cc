@@ -135,8 +135,11 @@ Rsa_authentication_keys::get_key_file_path(char *key, String *key_file_path)
      If a fully qualified path is entered use that, else assume the keys are 
      stored in the data directory.
    */
-  if (strchr(key, FN_LIBCHAR) != NULL ||
-      strchr(key, FN_LIBCHAR2) != NULL)
+  if (strchr(key, FN_LIBCHAR) != NULL
+#ifdef _WIN32
+      || strchr(key, FN_LIBCHAR2) != NULL
+#endif
+     )
     key_file_path->set_quick(key, strlen(key), system_charset_info);
   else
   {
@@ -210,6 +213,7 @@ Rsa_authentication_keys::read_key_file(RSA **key_ptr,
     }
 
     /* For public key, read key file content into a char buffer. */
+    bool read_error= false;
     if (!is_priv_key)
     {
       int filesize;
@@ -217,10 +221,18 @@ Rsa_authentication_keys::read_key_file(RSA **key_ptr,
       filesize= ftell(key_file);
       fseek(key_file, 0, SEEK_SET);
       *key_text_buffer= new char[filesize+1];
-      (void) fread(*key_text_buffer, filesize, 1, key_file);
+      int items_read= fread(*key_text_buffer, filesize, 1, key_file);
+      read_error= items_read != 1;
+      if (read_error)
+      {
+        char errbuf[MYSQL_ERRMSG_SIZE];
+        sql_print_error("Failure to read key file: %s",
+                        my_strerror(errbuf, MYSQL_ERRMSG_SIZE, my_errno()));
+      }
       (*key_text_buffer)[filesize]= '\0';
     }
     fclose(key_file);
+    return read_error;
   }
   return false;
 }
@@ -2029,6 +2041,12 @@ check_password_lifetime(THD *thd, const ACL_USER *acl_user)
       }
     }
   }
+  DBUG_EXECUTE_IF("force_password_interval_expire",
+                  {
+                    if (!acl_user->use_default_password_lifetime &&
+                        acl_user->password_lifetime)
+                      password_time_expired= true;
+                  });
   return password_time_expired;
 }
 
@@ -2073,6 +2091,20 @@ acl_log_connect(const char *user,
       db ? db : (char*) "",
       vio_name_str);
   }
+}
+
+/*
+  Assign priv_user and priv_host fields of the Security_context.
+
+  @param sctx Security context, which priv_user and priv_host fields are
+              updated.
+  @param user Authenticated user data.
+*/
+inline void
+assign_priv_user_host(Security_context *sctx, ACL_USER *user)
+{
+  sctx->assign_priv_user(user->user, user->user ? strlen(user->user) : 0);
+  sctx->assign_priv_host(user->host.get_host(), user->host.get_host_len());
 }
 
 /**
@@ -2201,10 +2233,20 @@ acl_authenticate(THD *thd, enum_server_command command)
     acl_log_connect(mpvio.auth_info.user_name, mpvio.auth_info.host_or_ip,
       mpvio.auth_info.authenticated_as, mpvio.db.str, thd, command);
   }
-  if (!mpvio.can_authenticate() && res == CR_OK)
+  if (res == CR_OK &&
+      (!mpvio.can_authenticate() || thd->is_error()))
   {
     res= CR_ERROR;
   }
+
+  /*
+    Assign account user/host data to the current THD. This information is used
+    when the authentication fails after this point and we call audit api
+    notification event. Client user/host connects to the existing account is
+    easily distinguished from other connects.
+  */
+  if (mpvio.can_authenticate())
+    assign_priv_user_host(sctx, const_cast<ACL_USER *>(acl_user));
 
   if (res > CR_OK && mpvio.status != MPVIO_EXT::SUCCESS)
   {
@@ -2259,6 +2301,9 @@ acl_authenticate(THD *thd, enum_server_command command)
         mpvio.auth_info.authenticated_as, mpvio.db.str, thd, command);
     }
 
+    if (thd->is_error())
+      DBUG_RETURN(1);
+
     if (is_proxy_user)
     {
       ACL_USER *acl_proxy_user;
@@ -2303,11 +2348,7 @@ acl_authenticate(THD *thd, enum_server_command command)
 #endif /* NO_EMBEDDED_ACCESS_CHECKS */
 
     sctx->set_master_access(acl_user->access);
-    sctx->assign_priv_user(acl_user->user, acl_user->user ?
-                                           strlen(acl_user->user) : 0);
-    sctx->assign_priv_host(acl_user->host.get_host(),
-                           acl_user->host.get_host() ?
-                           strlen(acl_user->host.get_host()) : 0);
+    assign_priv_user_host(sctx, const_cast<ACL_USER *>(acl_user));
 
     if (!(sctx->check_access(SUPER_ACL)) && !thd->is_error())
     {
@@ -2599,9 +2640,9 @@ int validate_sha256_password_hash(char* const inbuf, unsigned int buflen)
   return 1;
 }
 
-int set_sha256_salt(const char* password __attribute__((unused)),
-                    unsigned int password_len __attribute__((unused)),
-                    unsigned char* salt __attribute__((unused)),
+int set_sha256_salt(const char* password MY_ATTRIBUTE((unused)),
+                    unsigned int password_len MY_ATTRIBUTE((unused)),
+                    unsigned char* salt MY_ATTRIBUTE((unused)),
                     unsigned char *salt_len)
 {
   *salt_len= 0;

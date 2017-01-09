@@ -1,4 +1,4 @@
-/* Copyright (c) 2006, 2015, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2006, 2016, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -986,7 +986,7 @@ partition_element *partition_info::get_part_elem(const char *partition_name,
 */
 
 static const char *get_part_name_from_elem(const char *name, size_t *length,
-                                      my_bool not_used __attribute__((unused)))
+                                      my_bool not_used MY_ATTRIBUTE((unused)))
 {
   *length= strlen(name);
   return name;
@@ -3228,6 +3228,30 @@ void partition_info::print_debug(const char *str, uint *value)
     DBUG_PRINT("info", ("parser: %s", str));
   DBUG_VOID_RETURN;
 }
+
+bool has_external_data_or_index_dir(partition_info &pi)
+{
+  List_iterator<partition_element> part_it(pi.partitions);
+  for (partition_element *part= part_it++; part; part= part_it++)
+  {
+    if (part->data_file_name != NULL || part->index_file_name != NULL)
+    {
+      return true;
+    }
+    List_iterator<partition_element> subpart_it(part->subpartitions);
+    for (const partition_element *subpart= subpart_it++;
+         subpart;
+         subpart= subpart_it++)
+    {
+      if (subpart->data_file_name != NULL || subpart->index_file_name != NULL)
+      {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 
 /**
   Fill the Tablespace_hash_set with the tablespace names

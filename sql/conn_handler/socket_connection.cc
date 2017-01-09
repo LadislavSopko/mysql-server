@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2013, 2015, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -43,9 +43,6 @@ ulong Mysqld_socket_listener::connection_errors_select= 0;
 ulong Mysqld_socket_listener::connection_errors_accept= 0;
 ulong Mysqld_socket_listener::connection_errors_tcpwrap= 0;
 
-#ifdef HAVE_PSI_STATEMENT_INTERFACE
-PSI_statement_info stmt_info_new_packet;
-#endif
 
 void net_before_header_psi(struct st_net *net, void *user_data, size_t /* unused: count */)
 {
@@ -924,7 +921,7 @@ Channel_info* Mysqld_socket_listener::listen_for_connection_event()
 #ifdef __APPLE__
   if (mysql_socket_getfd(connect_sock) >= FD_SETSIZE)
   {
-    sql_print_warning("File Descriptor %d exceedeed FD_SETSIZE=%d",
+    sql_print_warning("File Descriptor %d exceeded FD_SETSIZE=%d",
                       mysql_socket_getfd(connect_sock), FD_SETSIZE);
     connection_errors_internal++;
     (void) mysql_socket_close(connect_sock);

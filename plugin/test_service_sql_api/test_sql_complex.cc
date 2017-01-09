@@ -96,7 +96,12 @@ static struct st_test_statement test_query_plan[]=
   {"test1", false, "UPDATE tbl SET a=2"},
   {"test1", false, "ROLLBACK"},
   {"test1", false, "SELECT IF(SUM(4) = 12, 'OK', 'FAIL') FROM tbl"},
-  // empty cmd
+  // disabled commands
+  {"test1", false, "INSTALL PLUGIN plugin_name SONAME 'shared_library_name'"},
+  {"test1", false, "UNINSTALL PLUGIN plugin_name"},
+  {"test1", false, "START GROUP_REPLICATION"},
+  {"test1", false, "STOP GROUP_REPLICATION"},
+   // empty cmd
   {"test1", true, ""},
 
   {"test1", false, "DROP TABLE tbl"},
@@ -168,8 +173,8 @@ struct st_plugin_ctx
 
   uint server_status;
   uint warn_count;
-  ulonglong affected_rows;
-  ulonglong last_insert_id;
+  uint affected_rows;
+  uint last_insert_id;
   char message[1024];
 
   uint sql_errno;

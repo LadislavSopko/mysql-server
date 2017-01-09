@@ -237,7 +237,7 @@ GRANT_INFO::GRANT_INFO()
 /* Get column name from column hash */
 
 static uchar *get_field_name(Field **buff, size_t *length,
-                             my_bool not_used __attribute__((unused)))
+                             my_bool not_used MY_ATTRIBUTE((unused)))
 {
   *length= strlen((*buff)->field_name);
   return (uchar*) (*buff)->field_name;
@@ -1931,6 +1931,27 @@ static int open_binary_frm(THD *thd, TABLE_SHARE *share, uchar *head,
       else if (!tmp_plugin && str_db_type_length == 9 &&
                !strncmp((char *) next_chunk + 2, "partition", 9))
       {
+        /*
+          An I_S query during server restart will provoke deprecation warnings.
+          Since there is no client connection for this query, make sure we
+          write the deprecation warning in the error log. Otherwise, push
+          warnings to the client.
+        */
+        if (mysqld_server_started)
+          push_warning_printf(thd, Sql_condition::SL_WARNING,
+                              ER_WARN_DEPRECATED_SYNTAX,
+                              ER_THD(thd,
+                                     ER_PARTITION_ENGINE_DEPRECATED_FOR_TABLE),
+                              share->db.str, share->table_name.str);
+        else
+          /*
+            Use the same string as above, not for localization, but for
+            making sure the wording is equal.
+          */
+          sql_print_warning(
+                  ER_DEFAULT(ER_PARTITION_ENGINE_DEPRECATED_FOR_TABLE),
+                  share->db.str, share->table_name.str);
+
         /* Check if the partitioning engine is ready */
         if (!ha_checktype(thd, DB_TYPE_PARTITION_DB, true, false))
         {
@@ -2936,6 +2957,10 @@ static bool unpack_gcol_info_from_frm(THD *thd,
 
   /* Validate the Item tree. */
   status= fix_fields_gcol_func(thd, field);
+
+  // Permanent changes to the item_tree are completed.
+  if (!thd->lex->is_ps_or_view_context_analysis())
+    field->gcol_info->permanent_changes_completed= true;
 
   if (disable_strict_mode)
   {
@@ -4661,7 +4686,7 @@ void TABLE::init(THD *thd, TABLE_LIST *tl)
   /* Tables may be reused in a sub statement. */
   DBUG_ASSERT(!file->extra(HA_EXTRA_IS_ATTACHED_CHILDREN));
   
-  bool error __attribute__((unused))= refix_gc_items(thd);
+  bool error MY_ATTRIBUTE((unused))= refix_gc_items(thd);
   DBUG_ASSERT(!error);
 }
 
@@ -4676,6 +4701,29 @@ bool TABLE::refix_gc_items(THD *thd)
       DBUG_ASSERT(vfield->gcol_info && vfield->gcol_info->expr_item);
       if (!vfield->gcol_info->expr_item->fixed)
       {
+        bool res= false;
+        /*
+          The call to fix_fields_gcol_func() may create new item objects in the
+          item tree for the generated column expression. If these are permanent
+          changes to the item tree, the new items must have the same life-span
+          as the ones created during parsing of the generated expression
+          string. We achieve this by temporarily switching to use the TABLE's
+          mem_root if the permanent changes to the item tree haven't been
+          completed (by checking the status of
+          gcol_info->permanent_changes_completed) and this call is not part of
+          context analysis (like prepare or show create table).
+        */
+        Query_arena *backup_stmt_arena_ptr= thd->stmt_arena;
+        Query_arena backup_arena;
+        Query_arena gcol_arena(&vfield->table->mem_root,
+                               Query_arena::STMT_CONVENTIONAL_EXECUTION);
+        if (!vfield->gcol_info->permanent_changes_completed &&
+            !thd->lex->is_ps_or_view_context_analysis())
+        {
+          thd->set_n_backup_active_arena(&gcol_arena, &backup_arena);
+          thd->stmt_arena= &gcol_arena;
+        }
+
         /* 
           Temporarily disable privileges check; already done when first fixed,
           and then based on definer's (owner's) rights: this thread has
@@ -4685,11 +4733,32 @@ bool TABLE::refix_gc_items(THD *thd)
         thd->want_privilege= 0;
 
         if (fix_fields_gcol_func(thd, vfield))
-          return true;
-        
+          res= true;
+
+        if (!vfield->gcol_info->permanent_changes_completed &&
+            !thd->lex->is_ps_or_view_context_analysis())
+        {
+          // Switch back to the original stmt_arena.
+          thd->stmt_arena= backup_stmt_arena_ptr;
+          thd->restore_active_arena(&gcol_arena, &backup_arena);
+
+          // Append the new items to the original item_free_list.
+          Item *item= vfield->gcol_info->item_free_list;
+          while (item->next)
+            item= item->next;
+          item->next= gcol_arena.free_list;
+
+          // Permanent changes to the item_tree are completed.
+          vfield->gcol_info->permanent_changes_completed= true;
+        }
+
         // Restore any privileges check
         thd->want_privilege= sav_want_priv;
         get_fields_in_item_tree= FALSE;
+
+        /* error occurs */
+        if (res)
+          return res;
       }
     }
   }
@@ -5709,6 +5778,7 @@ static Item *create_view_field(THD *thd, TABLE_LIST *view, Item **field_ref,
                                Name_resolution_context *context)
 {
   Item *field= *field_ref;
+  const char *table_name;
   DBUG_ENTER("create_view_field");
 
   if (view->schema_table_reformed)
@@ -5731,15 +5801,36 @@ static Item *create_view_field(THD *thd, TABLE_LIST *view, Item **field_ref,
   }
 
   /*
+    Original table name of a field is calculated as follows:
+    - For a view or base table, the view or base table name.
+    - For a derived table, the base table name.
+    - For an expression that is not a simple column reference, an empty string.
+  */
+  if (view->is_derived())
+  {
+    while (field->type() == Item::REF_ITEM)
+    {
+      field= down_cast<Item_ref *>(field)->ref[0];
+    }
+    if (field->type() == Item::FIELD_ITEM)
+      table_name= down_cast<Item_field *>(field)->table_name;
+    else
+      table_name= "";
+  }
+  else
+  {
+    table_name= view->table_name;
+  }
+  /*
     @note Creating an Item_direct_view_ref object on top of an Item_field
           means that the underlying Item_field object may be shared by
           multiple occurrences of superior fields. This is a vulnerable
           practice, so special precaution must be taken to avoid programming
           mistakes, such as forgetting to mark the use of a field in both
           read_set and write_set (may happen e.g in an UPDATE statement).
-  */ 
+  */
   Item *item= new Item_direct_view_ref(context, field_ref,
-                                       view->alias, view->table_name,
+                                       view->alias, table_name,
                                        name, view);
   DBUG_RETURN(item);
 }
@@ -6319,7 +6410,7 @@ void TABLE::mark_columns_needed_for_delete()
     build a complete row). If this is the case, we mark all not
     updated columns to be read.
 
-    If this is no the case, we do like in the delete case and mark
+    If this is not the case, we do like in the delete case and mark
     if neeed, either the primary key column or all columns to be read.
     (see mark_columns_needed_for_delete() for details)
 
@@ -6327,17 +6418,29 @@ void TABLE::mark_columns_needed_for_delete()
     mark all USED key columns as 'to-be-read'. This allows the engine to
     loop over the given record to find all changed keys and doesn't have to
     retrieve the row again.
-    
+
     Unlike other similar methods, it doesn't mark fields used by triggers,
     that is the responsibility of the caller to do, by using
     Table_trigger_dispatcher::mark_used_fields(TRG_EVENT_UPDATE)!
+
+    Note: Marking additional columns as per binlog_row_image requirements will
+    influence query execution plan. For example in the case of
+    binlog_row_image=FULL the entire read_set and write_set needs to be flagged.
+    This will influence update query to think that 'used key is being modified'
+    and query will create a temporary table to process the update operation.
+    Which will result in performance degradation. Hence callers who don't want
+    their query execution to be influenced as per binlog_row_image requirements
+    can skip marking binlog specific columns here and they should make an
+    explicit call to 'mark_columns_per_binlog_row_image()' function to mark
+    binlog_row_image specific columns.
 */
 
-void TABLE::mark_columns_needed_for_update()
+void TABLE::mark_columns_needed_for_update(bool mark_binlog_columns)
 {
 
   DBUG_ENTER("mark_columns_needed_for_update");
-  mark_columns_per_binlog_row_image();
+  if (mark_binlog_columns)
+    mark_columns_per_binlog_row_image();
   if (file->ha_table_flags() & HA_REQUIRES_KEY_COLUMNS_FOR_DELETE)
   {
     /* Mark all used key columns for read */
@@ -7611,6 +7714,9 @@ bool update_generated_read_fields(uchar *buf, TABLE *table, uint active_index)
     if (!vfield->stored_in_db &&
         bitmap_is_set(table->read_set, vfield->field_index))
     {
+      if (vfield->type() == MYSQL_TYPE_BLOB)
+        (down_cast<Field_blob*>(vfield))->need_to_keep_old_value();
+
       error= vfield->gcol_info->expr_item->save_in_field(vfield, 0);
       DBUG_PRINT("info", ("field '%s' - updated", vfield->field_name));
       if (error && !table->in_use->is_error())

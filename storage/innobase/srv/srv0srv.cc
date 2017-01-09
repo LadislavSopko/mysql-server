@@ -173,7 +173,6 @@ OS (provided we compiled Innobase with it in), otherwise we will
 use simulated aio we build below with threads.
 Currently we support native aio on windows and linux */
 my_bool	srv_use_native_aio = TRUE;
-my_bool	srv_numa_interleave = FALSE;
 
 #ifdef UNIV_DEBUG
 /** Force all user tables to use page compression. */
@@ -367,6 +366,7 @@ this many index pages, there are 2 ways to calculate statistics:
   table/index are not found in the innodb database */
 unsigned long long	srv_stats_transient_sample_pages = 8;
 my_bool		srv_stats_persistent = TRUE;
+my_bool		srv_stats_include_delete_marked = FALSE;
 unsigned long long	srv_stats_persistent_sample_pages = 20;
 my_bool		srv_stats_auto_recalc = TRUE;
 
@@ -1535,7 +1535,7 @@ extern "C"
 os_thread_ret_t
 DECLARE_THREAD(srv_monitor_thread)(
 /*===============================*/
-	void*	arg __attribute__((unused)))
+	void*	arg MY_ATTRIBUTE((unused)))
 			/*!< in: a dummy parameter required by
 			os_thread_create */
 {
@@ -1649,7 +1649,7 @@ extern "C"
 os_thread_ret_t
 DECLARE_THREAD(srv_error_monitor_thread)(
 /*=====================================*/
-	void*	arg __attribute__((unused)))
+	void*	arg MY_ATTRIBUTE((unused)))
 			/*!< in: a dummy parameter required by
 			os_thread_create */
 {
@@ -2115,7 +2115,7 @@ srv_master_do_active_tasks(void)
 	/* Do an ibuf merge */
 	srv_main_thread_op_info = "doing insert buffer merge";
 	counter_time = ut_time_us(NULL);
-	ibuf_merge_in_background(false, ULINT_UNDEFINED);
+	ibuf_merge_in_background(false);
 	MONITOR_INC_TIME_IN_MICRO_SECS(
 		MONITOR_SRV_IBUF_MERGE_MICROSECOND, counter_time);
 
@@ -2204,7 +2204,7 @@ srv_master_do_idle_tasks(void)
 	/* Do an ibuf merge */
 	counter_time = ut_time_us(NULL);
 	srv_main_thread_op_info = "doing insert buffer merge";
-	ibuf_merge_in_background(true, ULINT_UNDEFINED);
+	ibuf_merge_in_background(true);
 	MONITOR_INC_TIME_IN_MICRO_SECS(
 		MONITOR_SRV_IBUF_MERGE_MICROSECOND, counter_time);
 
@@ -2284,7 +2284,7 @@ srv_master_do_shutdown_tasks(
 
 	/* Do an ibuf merge */
 	srv_main_thread_op_info = "doing insert buffer merge";
-	n_bytes_merged = ibuf_merge_in_background(true, ULINT_UNDEFINED);
+	n_bytes_merged = ibuf_merge_in_background(true);
 
 	/* Flush logs if needed */
 	srv_sync_log_buffer_in_background();
@@ -2324,7 +2324,7 @@ extern "C"
 os_thread_ret_t
 DECLARE_THREAD(srv_master_thread)(
 /*==============================*/
-	void*	arg __attribute__((unused)))
+	void*	arg MY_ATTRIBUTE((unused)))
 			/*!< in: a dummy parameter required by
 			os_thread_create */
 {
@@ -2471,7 +2471,7 @@ extern "C"
 os_thread_ret_t
 DECLARE_THREAD(srv_worker_thread)(
 /*==============================*/
-	void*	arg __attribute__((unused)))	/*!< in: a dummy parameter
+	void*	arg MY_ATTRIBUTE((unused)))	/*!< in: a dummy parameter
 						required by os_thread_create */
 {
 	srv_slot_t*	slot;
@@ -2738,7 +2738,7 @@ extern "C"
 os_thread_ret_t
 DECLARE_THREAD(srv_purge_coordinator_thread)(
 /*=========================================*/
-	void*	arg __attribute__((unused)))	/*!< in: a dummy parameter
+	void*	arg MY_ATTRIBUTE((unused)))	/*!< in: a dummy parameter
 						required by os_thread_create */
 {
 	my_thread_init();

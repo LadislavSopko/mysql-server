@@ -369,7 +369,7 @@ static bool send_prep_stmt(Prepared_statement *stmt, uint columns)
 }
 #else
 static bool send_prep_stmt(Prepared_statement *stmt,
-                           uint columns __attribute__((unused)))
+                           uint columns MY_ATTRIBUTE((unused)))
 {
   THD *thd= stmt->thd;
 
@@ -1198,9 +1198,6 @@ bool Sql_cmd_insert::mysql_test_insert(THD *thd, TABLE_LIST *table_list)
 
   if ((values= its++))
   {
-    uint value_count;
-    ulong counter= 0;
-
     if (table_list->table)
     {
       // don't allocate insert_values
@@ -1210,20 +1207,7 @@ bool Sql_cmd_insert::mysql_test_insert(THD *thd, TABLE_LIST *table_list)
     if (mysql_prepare_insert(thd, table_list, values, false))
       goto error;
 
-    value_count= values->elements;
     its.rewind();
-
-    while ((values= its++))
-    {
-      counter++;
-      if (values->elements != value_count)
-      {
-        my_error(ER_WRONG_VALUE_COUNT_ON_ROW, MYF(0), counter);
-        goto error;
-      }
-      if (setup_fields(thd, Ref_ptr_array(), *values, 0, NULL, false, false))
-        goto error;
-    }
   }
   DBUG_RETURN(FALSE);
 
@@ -3271,14 +3255,19 @@ bool Prepared_statement::prepare(const char *query_str, size_t query_length)
   invoke_pre_parse_rewrite_plugins(thd);
   thd->m_parser_state = NULL;
 
-  error= parse_sql(thd, &parser_state, NULL) ||
-    thd->is_error() ||
-    init_param_array(this);
+  error= thd->is_error();
 
   if (!error)
-  { // We've just created the statement maybe there is a rewrite
-    invoke_post_parse_rewrite_plugins(thd, true);
-    error= init_param_array(this);
+  {
+    error = parse_sql(thd, &parser_state, NULL) ||
+            thd->is_error() ||
+            init_param_array(this);
+
+    if (!error)
+    { // We've just created the statement maybe there is a rewrite
+      invoke_post_parse_rewrite_plugins(thd, true);
+      error = init_param_array(this);
+    }
   }
 
   lex->set_trg_event_type_for_tables();
@@ -3900,7 +3889,10 @@ bool Prepared_statement::execute(String *expanded_query, bool open_cursor)
     // Execute
 
     if (open_cursor)
+    {
+      lex->safe_to_cache_query= 0;
       error= mysql_open_cursor(thd, &result, &cursor);
+    }
     else
     {
       /*
@@ -4393,7 +4385,7 @@ bool Protocol_local::store(const char *str, size_t length,
 /* Store MYSQL_TIME (in binary format) */
 
 bool Protocol_local::store(MYSQL_TIME *time,
-                           uint precision __attribute__((unused)))
+                           uint precision MY_ATTRIBUTE((unused)))
 {
   return store_column(time, sizeof(MYSQL_TIME));
 }
@@ -4410,7 +4402,7 @@ bool Protocol_local::store_date(MYSQL_TIME *time)
 /** Store MYSQL_TIME (in binary format) */
 
 bool Protocol_local::store_time(MYSQL_TIME *time,
-                                uint precision __attribute__((unused)))
+                                uint precision MY_ATTRIBUTE((unused)))
 {
   return store_column(time, sizeof(MYSQL_TIME));
 }

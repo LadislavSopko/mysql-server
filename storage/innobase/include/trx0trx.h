@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2015, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1996, 2016, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -409,7 +409,7 @@ enum trx_dict_op_t
 trx_get_dict_operation(
 /*===================*/
 	const trx_t*	trx)	/*!< in: transaction */
-	__attribute__((warn_unused_result));
+	MY_ATTRIBUTE((warn_unused_result));
 /**********************************************************************//**
 Flag a transaction a dictionary operation. */
 UNIV_INLINE
@@ -433,7 +433,7 @@ trx_state_eq(
 /*=========*/
 	const trx_t*	trx,	/*!< in: transaction */
 	trx_state_t	state)	/*!< in: state */
-	__attribute__((warn_unused_result));
+	MY_ATTRIBUTE((warn_unused_result));
 # ifdef UNIV_DEBUG
 /**********************************************************************//**
 Asserts that a transaction has been started.
@@ -443,7 +443,7 @@ ibool
 trx_assert_started(
 /*===============*/
 	const trx_t*	trx)	/*!< in: transaction */
-	__attribute__((warn_unused_result));
+	MY_ATTRIBUTE((warn_unused_result));
 # endif /* UNIV_DEBUG */
 
 /**********************************************************************//**
@@ -1435,10 +1435,30 @@ private:
 			return;
 		}
 
-		/* Avoid excessive mutex acquire/release */
-
 		ut_ad(!is_async_rollback(trx));
 
+		/* If it hasn't already been marked for async rollback.
+		and it will be committed/rolled back. */
+		if (disable) {
+
+			trx_mutex_enter(trx);
+			if (!is_forced_rollback(trx)
+			    && is_started(trx)
+			    && !trx_is_autocommit_non_locking(trx)) {
+
+				ut_ad(trx->killed_by == 0);
+
+				/* This transaction has crossed the point of
+				no return and cannot be rolled back
+				asynchronously now. It must commit or rollback
+				synhronously. */
+
+				trx->in_innodb |= TRX_FORCE_ROLLBACK_DISABLE;
+			}
+			trx_mutex_exit(trx);
+		}
+
+		/* Avoid excessive mutex acquire/release */
 		++trx->in_depth;
 
 		/* If trx->in_depth is greater than 1 then
@@ -1456,25 +1476,7 @@ private:
 
 		wait(trx);
 
-		ut_ad((trx->in_innodb & TRX_FORCE_ROLLBACK_MASK)
-		      < (TRX_FORCE_ROLLBACK_MASK - 1));
-
-		/* If it hasn't already been marked for async rollback.
-		and it will be committed/rolled back. */
-
-		if (!is_forced_rollback(trx)
-		    && disable
-		    && is_started(trx)
-		    && !trx_is_autocommit_non_locking(trx)) {
-
-			ut_ad(trx->killed_by == 0);
-
-			/* This transaction has crossed the point of no
-			return and cannot be rolled back asynchronously
-			now. It must commit or rollback synhronously. */
-
-			trx->in_innodb |= TRX_FORCE_ROLLBACK_DISABLE;
-		}
+		ut_ad((trx->in_innodb & TRX_FORCE_ROLLBACK_MASK) == 0);
 
 		++trx->in_innodb;
 
@@ -1529,18 +1531,30 @@ private:
 	{
 		ut_ad(trx_mutex_own(trx));
 
+		ulint	loop_count = 0;
+		/* start with optimistic sleep time - 20 micro seconds. */
+		ulint	sleep_time = 20;
+
 		while (is_forced_rollback(trx)) {
-
-			if (!is_started(trx)) {
-
-				return;
-			}
 
 			/* Wait for the async rollback to complete */
 
 			trx_mutex_exit(trx);
 
-			os_thread_sleep(20);
+			loop_count++;
+			/* If the wait is long, don't hog the cpu. */
+			if (loop_count < 100) {
+				/* 20 microseconds */
+				sleep_time = 20;
+			} else if (loop_count < 1000) {
+				/* 1 millisecond */
+				sleep_time = 1000;
+			} else {
+				/* 100 milliseconds */
+				sleep_time = 100000;
+			}
+
+			os_thread_sleep(sleep_time);
 
 			trx_mutex_enter(trx);
 		}

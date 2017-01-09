@@ -43,6 +43,8 @@ FILE(GLOB ngs_SRC
 )
 
 SET(xplugin_HDRS
+  "${MYSQLX_PROJECT_DIR}/src/io/xpl_listener_tcp.h"
+  "${MYSQLX_PROJECT_DIR}/src/io/xpl_listener_unix_socket.h"
   "${MYSQLX_PROJECT_DIR}/src/xpl_server.h"
   "${MYSQLX_PROJECT_DIR}/src/xpl_session.h"
   "${MYSQLX_PROJECT_DIR}/src/xpl_client.h"
@@ -52,6 +54,8 @@ SET(xplugin_HDRS
   "${MYSQLX_PROJECT_DIR}/src/xpl_global_status_variables.h"
   "${MYSQLX_PROJECT_DIR}/src/xpl_session_status_variables.h"
   "${MYSQLX_PROJECT_DIR}/src/xpl_replication_observer.h"
+  "${MYSQLX_PROJECT_DIR}/src/xpl_log.h"
+  "${MYSQLX_PROJECT_DIR}/src/xpl_regex.h"
   "${MYSQLX_PROJECT_DIR}/src/auth_plain.h"
   "${MYSQLX_PROJECT_DIR}/src/auth_mysql41.h"
   "${MYSQLX_PROJECT_DIR}/src/admin_cmd_handler.h"
@@ -67,25 +71,30 @@ SET(xplugin_HDRS
   "${MYSQLX_PROJECT_DIR}/src/sql_user_require.h"
   "${MYSQLX_PROJECT_DIR}/src/json_utils.h"
   "${MYSQLX_PROJECT_DIR}/src/expect.h"
-  "${MYSQLX_PROJECT_DIR}/src/xpl_log.h"
   "${MYSQLX_PROJECT_DIR}/src/statement_builder.h"
   "${MYSQLX_PROJECT_DIR}/src/update_statement_builder.h"
   "${MYSQLX_PROJECT_DIR}/src/find_statement_builder.h"
   "${MYSQLX_PROJECT_DIR}/src/insert_statement_builder.h"
   "${MYSQLX_PROJECT_DIR}/src/delete_statement_builder.h"
+  "${MYSQLX_PROJECT_DIR}/src/view_statement_builder.h"
   "${MYSQLX_PROJECT_DIR}/src/notices.h"
   "${MYSQLX_PROJECT_DIR}/src/cap_handles_expired_passwords.h"
+  "${MYSQLX_PROJECT_DIR}/src/mysql_function_names.h"
   ${ngs_HDRS}
 )
 
 SET(xplugin_SRC
   "${MYSQLX_PROJECT_DIR}/src/xpl_log.cc"
+  "${MYSQLX_PROJECT_DIR}/src/io/xpl_listener_tcp.cc"
+  "${MYSQLX_PROJECT_DIR}/src/io/xpl_listener_unix_socket.cc"
   "${MYSQLX_PROJECT_DIR}/src/xpl_server.cc"
   "${MYSQLX_PROJECT_DIR}/src/xpl_session.cc"
   "${MYSQLX_PROJECT_DIR}/src/xpl_client.cc"
   "${MYSQLX_PROJECT_DIR}/src/xpl_dispatcher.cc"
   "${MYSQLX_PROJECT_DIR}/src/xpl_system_variables.cc"
   "${MYSQLX_PROJECT_DIR}/src/xpl_replication_observer.cc"
+  "${MYSQLX_PROJECT_DIR}/src/xpl_regex.cc"
+  "${MYSQLX_PROJECT_DIR}/src/io/xpl_listener_factory.cc"
   "${MYSQLX_PROJECT_DIR}/src/mysql_variables.cc"
   "${MYSQLX_PROJECT_DIR}/src/mysql_function_names.cc"
   "${MYSQLX_PROJECT_DIR}/src/mysql_show_variable_wrapper.cc"
@@ -107,6 +116,7 @@ SET(xplugin_SRC
   "${MYSQLX_PROJECT_DIR}/src/update_statement_builder.cc"
   "${MYSQLX_PROJECT_DIR}/src/find_statement_builder.cc"
   "${MYSQLX_PROJECT_DIR}/src/delete_statement_builder.cc"
+  "${MYSQLX_PROJECT_DIR}/src/view_statement_builder.cc"
   "${MYSQLX_PROJECT_DIR}/src/insert_statement_builder.cc"
   "${MYSQLX_PROJECT_DIR}/src/notices.cc"
   ${ngs_SRC}

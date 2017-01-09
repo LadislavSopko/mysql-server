@@ -129,7 +129,7 @@ struct LatchDebug {
 		os_thread_id_t,
 		Latches*,
 		os_thread_id_less,
-		ut_allocator<std::pair<const std::string, latch_meta_t> > >
+		ut_allocator<std::pair<const os_thread_id_t, Latches*> > >
 		ThreadMap;
 
 	/** Constructor */
@@ -424,7 +424,7 @@ private:
 		latch_level_t,
 		std::string,
 		latch_level_less,
-		ut_allocator<std::pair<latch_level_t, std::string> > >
+		ut_allocator<std::pair<const latch_level_t, std::string> > >
 		Levels;
 
 	/** Mutex protecting the deadlock detector data structures. */
@@ -485,6 +485,7 @@ LatchDebug::LatchDebug()
 	LEVEL_MAP_INSERT(SYNC_RECV);
 	LEVEL_MAP_INSERT(SYNC_LOG_FLUSH_ORDER);
 	LEVEL_MAP_INSERT(SYNC_LOG);
+	LEVEL_MAP_INSERT(SYNC_LOG_WRITE);
 	LEVEL_MAP_INSERT(SYNC_PAGE_CLEANER);
 	LEVEL_MAP_INSERT(SYNC_PURGE_QUEUE);
 	LEVEL_MAP_INSERT(SYNC_TRX_SYS_HEADER);
@@ -766,6 +767,7 @@ LatchDebug::check_order(
 	case SYNC_FTS_CACHE_INIT:
 	case SYNC_PAGE_CLEANER:
 	case SYNC_LOG:
+	case SYNC_LOG_WRITE:
 	case SYNC_LOG_FLUSH_ORDER:
 	case SYNC_FILE_FORMAT_TAG:
 	case SYNC_DOUBLEWRITE:
@@ -1389,6 +1391,8 @@ sync_latch_meta_init()
 
 	LATCH_ADD(LOG_SYS, SYNC_LOG, log_sys_mutex_key);
 
+	LATCH_ADD(LOG_WRITE, SYNC_LOG_WRITE, log_sys_write_mutex_key);
+
 	LATCH_ADD(LOG_FLUSH_ORDER, SYNC_LOG_FLUSH_ORDER,
 		  log_flush_order_mutex_key);
 
@@ -1702,7 +1706,7 @@ private:
 		const void*,
 		File,
 		std::less<const void*>,
-		ut_allocator<std::pair<const void*, File> > >
+		ut_allocator<std::pair<const void* const, File> > >
 		Files;
 
 	typedef OSMutex	Mutex;

@@ -164,7 +164,7 @@ our $opt_vs_config = $ENV{'MTR_VS_CONFIG'};
 
 # If you add a new suite, please check TEST_DIRS in Makefile.am.
 #
-my $DEFAULT_SUITES= "main,sys_vars,binlog,federated,gis,rpl,innodb,innodb_gis,innodb_fts,innodb_zip,innodb_undo,perfschema,funcs_1,opt_trace,parts,auth_sec,query_rewrite_plugins,gcol,sysschema,xplugin";
+my $DEFAULT_SUITES= "main,sys_vars,binlog,federated,gis,rpl,innodb,innodb_gis,innodb_fts,innodb_zip,innodb_undo,perfschema,funcs_1,opt_trace,parts,auth_sec,query_rewrite_plugins,gcol,sysschema,test_service_sql_api,json,connection_control";
 my $opt_suites;
 
 our $opt_verbose= 0;  # Verbose output, enable with --verbose
@@ -243,6 +243,7 @@ our $opt_ddd;
 our $opt_client_ddd;
 my $opt_boot_ddd;
 our $opt_manual_gdb;
+our $opt_manual_boot_gdb;
 our $opt_manual_lldb;
 our $opt_manual_dbx;
 our $opt_manual_ddd;
@@ -258,10 +259,16 @@ our $experimental_test_cases= [];
 
 my $baseport;
 my $mysqlx_baseport;
+
+my $opt_mysqlx_baseport = $ENV{'MYSQLXPLUGIN_PORT'} || "auto";
 # $opt_build_thread may later be set from $opt_port_base
 my $opt_build_thread= $ENV{'MTR_BUILD_THREAD'} || "auto";
 my $opt_port_base= $ENV{'MTR_PORT_BASE'} || "auto";
 my $build_thread= 0;
+
+my $ports_per_thread= 10;
+our $group_replication= 0;
+our $xplugin= 0;
 
 my $opt_record;
 my $opt_report_features;
@@ -303,7 +310,6 @@ our $opt_valgrind= 0;
 my $opt_valgrind_mysqld= 0;
 my $opt_valgrind_clients= 0;
 my $opt_valgrind_mysqltest= 0;
-my @default_valgrind_args= ("--show-reachable=yes");
 my @valgrind_args;
 my $opt_valgrind_path;
 my $valgrind_reports= 0;
@@ -422,17 +428,20 @@ sub main {
     for my $limit (2000, 1500, 1000, 500){
       $opt_parallel-- if ($sys_info->min_bogomips() < $limit);
     }
-    my $max_par= $ENV{MTR_MAX_PARALLEL} || 8;
-    $opt_parallel= $max_par if ($opt_parallel > $max_par);
-    $opt_parallel= $num_tests if ($opt_parallel > $num_tests);
-    $opt_parallel= 1 if (IS_WINDOWS and $sys_info->isvm());
+    if(defined $ENV{MTR_MAX_PARALLEL}) {
+      my $max_par= $ENV{MTR_MAX_PARALLEL};
+      $opt_parallel= $max_par if ($opt_parallel > $max_par);
+    }
     $opt_parallel= 1 if ($opt_parallel < 1);
-    mtr_report("Using parallel: $opt_parallel");
   }
+  # Limit parallel workers to number of tests to avoid idle workers
+  $opt_parallel= $num_tests if ($num_tests > 0 and $opt_parallel > $num_tests);
   $ENV{MTR_PARALLEL} = $opt_parallel;
+  mtr_report("Using parallel: $opt_parallel");
 
-  if ($opt_parallel > 1 && ($opt_start_exit || $opt_stress)) {
-    mtr_warning("Parallel cannot be used with --start-and-exit or --stress\n" .
+  my $is_option_mysqlx_port_set= $opt_mysqlx_baseport ne "auto";
+  if ($opt_parallel > 1 && ($opt_start_exit || $opt_stress || $is_option_mysqlx_port_set)) {
+    mtr_warning("Parallel cannot be used neither with --start-and-exit nor --stress nor --mysqlx_port\n" .
                "Setting parallel to 1");
     $opt_parallel= 1;
   }
@@ -464,6 +473,7 @@ sub main {
   # Also read from any plugin local or suite specific plugin.defs
   for (glob "$basedir/plugin/*/tests/mtr/plugin.defs".
             " $basedir/internal/plugin/*/tests/mtr/plugin.defs".
+            " $basedir/rapid/plugin/*/tests/mtr/plugin.defs".
             " suite/*/plugin.defs") {
     read_plugin_defs($_);
   }
@@ -476,6 +486,16 @@ sub main {
   }
   else {
     $ENV{'PLUGIN_SUFFIX'}= "so";
+  }
+
+  if ($group_replication)
+  {
+    $ports_per_thread= $ports_per_thread + 10;
+  }
+
+  if ($xplugin)
+  {
+    $ports_per_thread= $ports_per_thread + 10;
   }
 
   # Create child processes
@@ -1115,8 +1135,9 @@ sub command_line_setup {
 	     'skip-im'                  => \&ignore_option,
 
              # Specify ports
-	     'build-thread|mtr-build-thread=i' => \$opt_build_thread,
-	     'port-base|mtr-port-base=i'       => \$opt_port_base,
+             'build-thread|mtr-build-thread=i' => \$opt_build_thread,
+             'mysqlx-port=i'                   => \$opt_mysqlx_baseport,
+             'port-base|mtr-port-base=i'       => \$opt_port_base,
 
              # Test case authoring
              'record'                   => \$opt_record,
@@ -1142,6 +1163,7 @@ sub command_line_setup {
              'client-gdb'               => \$opt_client_gdb,
              'client-lldb'              => \$opt_client_lldb,
              'manual-gdb'               => \$opt_manual_gdb,
+             'manual-boot-gdb'          => \$opt_manual_boot_gdb,
              'manual-lldb'              => \$opt_manual_lldb,
 	     'boot-gdb'                 => \$opt_boot_gdb,
              'manual-debug'             => \$opt_manual_debug,
@@ -1616,7 +1638,7 @@ sub command_line_setup {
 
     if ( $opt_gdb || $opt_ddd || $opt_manual_gdb || $opt_manual_lldb || 
          $opt_manual_ddd || $opt_manual_debug || $opt_debugger || $opt_dbx || 
-         $opt_lldb || $opt_manual_dbx)
+         $opt_lldb || $opt_manual_dbx || $opt_manual_boot_gdb )
     {
       mtr_error("You need to use the client debug options for the",
 		"embedded server. Ex: --client-gdb");
@@ -1645,7 +1667,7 @@ sub command_line_setup {
   if ( $opt_gdb || $opt_client_gdb || $opt_ddd || $opt_client_ddd || 
        $opt_manual_gdb || $opt_manual_lldb || $opt_manual_ddd || 
        $opt_manual_debug || $opt_dbx || $opt_client_dbx || $opt_manual_dbx || 
-       $opt_debugger || $opt_client_debugger )
+       $opt_debugger || $opt_client_debugger || $opt_manual_boot_gdb )
   {
     # Indicate that we are using debugger
     $glob_debugger= 1;
@@ -1735,6 +1757,16 @@ sub command_line_setup {
     if ($opt_suite_timeout <= 0);
 
   # --------------------------------------------------------------------------
+  # Check trace protocol option
+  # --------------------------------------------------------------------------
+  if ( $opt_trace_protocol )
+  {
+    push(@opt_extra_mysqld_opt, "--optimizer_trace=enabled=on,one_line=off");
+    # Some queries yield big traces:
+    push(@opt_extra_mysqld_opt, "--optimizer-trace-max-mem-size=1000000");
+  }
+
+  # --------------------------------------------------------------------------
   # Check valgrind arguments
   # --------------------------------------------------------------------------
   if ( $opt_valgrind or $opt_valgrind_path or @valgrind_args)
@@ -1774,32 +1806,40 @@ sub command_line_setup {
     $opt_valgrind= 1;
     $opt_valgrind_mysqld= 1;
 
-    # Set special valgrind options unless options passed on command line
-    push(@valgrind_args, "--trace-children=yes")
-      unless @valgrind_args;
+    push(@valgrind_args, "--tool=callgrind", "--trace-children=yes");
+
+    # Increase the timeouts when running with callgrind
+    $opt_testcase_timeout*= 10;
+    $opt_suite_timeout*= 6;
+    $opt_start_timeout*= 10;
+    $opt_debug_sync_timeout*= 10;
   }
 
-  if ( $opt_trace_protocol )
+  if ($opt_valgrind)
   {
-    push(@opt_extra_mysqld_opt, "--optimizer_trace=enabled=on,one_line=off");
-    # some queries yield big traces:
-    push(@opt_extra_mysqld_opt, "--optimizer-trace-max-mem-size=1000000");
-  }
+    # Default to --tool=memcheck if no other tool has been explicitly
+    # specified. From >= 2.1.2, this option is needed
+    if (!@valgrind_args or !grep(/^--tool=/, @valgrind_args))
+    {
+      # Set default valgrind options for memcheck, can be overriden by user
+      unshift(@valgrind_args, ("--tool=memcheck", "--num-callers=16",
+                               "--show-reachable=yes"));
+    }
 
-  if ( $opt_valgrind )
-  {
-    # Set valgrind_options to default unless already defined
-    push(@valgrind_args, @default_valgrind_args)
-      unless @valgrind_args;
+    # Add suppression file if not specified
+    if (!grep(/^--suppressions=/, @valgrind_args))
+    {
+      push(@valgrind_args,"--suppressions=${glob_mysql_test_dir}/valgrind.supp")
+           if -f "$glob_mysql_test_dir/valgrind.supp";
+    }
 
     # Don't add --quiet; you will loose the summary reports.
-
     mtr_report("Running valgrind with options \"",
-	       join(" ", @valgrind_args), "\"");
-    
+               join(" ", @valgrind_args), "\"");
+
     # Turn off check testcases to save time
     mtr_report("Turning off --check-testcases to save time when valgrinding");
-    $opt_check_testcases = 0; 
+    $opt_check_testcases = 0;
   }
 
   if ($opt_debug_common)
@@ -1828,7 +1868,6 @@ sub command_line_setup {
   check_debug_support(\%mysqld_variables);
 
   executable_setup();
-
 }
 
 
@@ -1850,18 +1889,39 @@ sub command_line_setup {
 sub set_build_thread_ports($) {
   my $thread= shift || 0;
 
-  if ( lc($opt_build_thread) eq 'auto' ) {
+  # Number of unique build threads needed per MTR thread.
+  my $build_threads_per_thread= int($ports_per_thread / 10);
+
+  if ( lc($opt_build_thread) eq 'auto' )
+  {
     my $found_free = 0;
-    $build_thread = 300;	# Start attempts from here
-    while (! $found_free)
+    # Start attempts from here
+    $build_thread = 300;
+
+    my $max_parallel= $opt_parallel * $build_threads_per_thread;
+    my $build_thread_upper = $build_thread + ($max_parallel > 39
+                             ? $max_parallel + int($max_parallel / 4)
+                             : 49);
+
+    while (!$found_free)
     {
-      $build_thread= mtr_get_unique_id($build_thread, 349);
-      if ( !defined $build_thread ) {
+      $build_thread= mtr_get_unique_id($build_thread, $build_thread_upper,
+                                       $build_threads_per_thread);
+
+      if (!defined $build_thread)
+      {
         mtr_error("Could not get a unique build thread id");
       }
-      $found_free= check_ports_free($build_thread);
+
+      for(my $i= 0; $i < $build_threads_per_thread; $i++)
+      {
+        $found_free= check_ports_free($build_thread + $i);
+        last if !$found_free;
+      }
+
       # If not free, release and try from next number
-      if (! $found_free) {
+      if (!$found_free)
+      {
         mtr_release_unique_id();
         $build_thread++;
       }
@@ -1869,26 +1929,49 @@ sub set_build_thread_ports($) {
   }
   else
   {
-    $build_thread = $opt_build_thread + $thread - 1;
-    if (! check_ports_free($build_thread)) {
-      # Some port was not free(which one has already been printed)
-      mtr_error("Some port(s) was not free")
+    $build_thread = $opt_build_thread + ($thread - 1) * $build_threads_per_thread;
+    for (my $i= 0; $i < $build_threads_per_thread; $i++)
+    {
+      if (!check_ports_free($build_thread + $i))
+      {
+        # Some port was not free(which one has already been printed)
+        mtr_error("Some port(s) was not free")
+      }
     }
   }
+
   $ENV{MTR_BUILD_THREAD}= $build_thread;
 
   # Calculate baseport
   $baseport= $build_thread * 10 + 10000;
-  $mysqlx_baseport =  $baseport + 9;
-  if ( $baseport < 5001 or $mysqlx_baseport + 9 >= 32767 )
+
+  if (lc($opt_mysqlx_baseport) eq "auto")
+  {
+    if ($ports_per_thread > 10)
+    {
+      # Reserving last 10 ports in the current port range for X plugin.
+      $mysqlx_baseport= $baseport + $ports_per_thread - 10;
+    }
+    else
+    {
+      # Reserving the last port in the range for X plugin
+      $mysqlx_baseport= $baseport + 9;
+    }
+  }
+  else
+  {
+    $mysqlx_baseport= $opt_mysqlx_baseport;
+  }
+
+  if ($baseport < 5001 or $baseport + $ports_per_thread - 1 >= 32767)
   {
     mtr_error("MTR_BUILD_THREAD number results in a port",
               "outside 5001 - 32767",
-              "($baseport - $baseport + 9)");
+              "($baseport - $baseport + $ports_per_thread - 1)");
   }
 
   mtr_report("Using MTR_BUILD_THREAD $build_thread,",
-	     "with reserved ports $baseport..".($baseport+9));
+	     "with reserved ports $baseport..".($baseport + $ports_per_thread - 1));
 }
 
 
@@ -2279,6 +2362,7 @@ sub mysqlxtest_arguments(){
                              "$bindir/rapid/plugin/x/mysqlxtest",
                              "$bindir/rapid/plugin/x/Debug/mysqlxtest",
                              "$bindir/rapid/plugin/x/Release/mysqlxtest",
+                             "$bindir/rapid/plugin/x/RelWithDebInfo/mysqlxtest",
                              "$bindir/bin/mysqlxtest");
   return "" unless $exe;
 
@@ -2735,6 +2819,9 @@ sub environment_setup {
   # Create an environment variable to make it possible
   # to detect that valgrind is being used from test cases
   $ENV{'VALGRIND_TEST'}= $opt_valgrind;
+
+  # Make sure LeakSanitizer exits if leaks are found
+  $ENV{'LSAN_OPTIONS'}= "exitcode=42";
 
   # Add dir of this perl to aid mysqltest in finding perl
   my $perldir= dirname($^X);
@@ -3617,14 +3704,19 @@ sub check_ports_free ($)
 {
   my $bthread= shift;
   my $portbase = $bthread * 10 + 10000;
-  for ($portbase..$portbase+9){
-    if (mtr_ping_port($_)){
+
+  for ($portbase..$portbase + 9)
+  {
+    if (mtr_ping_port($_))
+    {
       mtr_report(" - 'localhost:$_' was not free");
-      return 0; # One port was not free
+      # One port was not free
+      return 0;
     }
   }
 
-  return 1; # All ports free
+  # All ports free
+  return 1;
 }
 
 
@@ -3814,7 +3906,7 @@ sub mysql_install_db {
   # ----------------------------------------------------------------------
   my $bootstrap_sql_file= "$opt_vardir/tmp/bootstrap.sql";
 
-  if ($opt_boot_gdb) {
+  if ($opt_boot_gdb || $opt_manual_boot_gdb) {
     gdb_arguments(\$args, \$exe_mysqld_bootstrap, $mysqld->name(),
 		  $bootstrap_sql_file);
   }
@@ -3900,6 +3992,16 @@ sub mysql_install_db {
   # Add procedures for checking server is restored after testcase
   mtr_tofile($bootstrap_sql_file,
              sql_to_bootstrap(mtr_grab_file("include/mtr_check.sql")));
+
+  if ( $opt_manual_boot_gdb )
+  {
+    # The configuration has been set up and user has been prompted for
+    # how to start the servers manually in the requested debugger.
+    # At this time mtr.pl have no knowledge about the server processes
+    # and thus can't wait for them to finish, mtr exits at this point.
+    exit(0);
+  }
+
 
   # Log bootstrap command
   my $path_bootstrap_log= "$opt_vardir/log/bootstrap.log";
@@ -4415,6 +4517,7 @@ sub run_testcase ($) {
 	   vardir          => $opt_vardir,
 	   tmpdir          => $opt_tmpdir,
 	   baseport        => $baseport,
+           mysqlxbaseport  => $mysqlx_baseport,
 	   #hosts          => [ 'host1', 'host2' ],
 	   user            => $opt_user,
 	   password        => '',
@@ -5669,17 +5772,18 @@ sub mysqld_arguments ($$$) {
       mtr_add_arg($args, "%s", $arg);
     }
   }
+
   $opt_skip_core = $found_skip_core;
   if (IS_WINDOWS && !$found_no_console && !$found_log_error)
   {
     # Trick the server to send output to stderr, with --console
     mtr_add_arg($args, "--console");
   }
+
   if ( !$found_skip_core && !$opt_user_args )
   {
     mtr_add_arg($args, "%s", "--core-file");
   }
-  mtr_add_arg($args, "--loose-mysqlx-port=%d",$mysqlx_baseport);
 
   return $args;
 }
@@ -5716,7 +5820,7 @@ sub mysqld_start ($$) {
 
   if ( $opt_valgrind_mysqld )
   {
-    valgrind_arguments($args, \$exe);
+    valgrind_arguments($args, \$exe, $mysqld->name());
   }
 
   mtr_add_arg($args, "--defaults-group-suffix=%s", $mysqld->after('mysqld'));
@@ -5748,7 +5852,7 @@ sub mysqld_start ($$) {
   {
     ddd_arguments(\$args, \$exe, $mysqld->name());
   }
-  if ( $opt_dbx || $opt_manual_dbx ) {
+  elsif ( $opt_dbx || $opt_manual_dbx ) {
     dbx_arguments(\$args, \$exe, $mysqld->name());
   }
   elsif ( $opt_debugger )
@@ -6123,6 +6227,7 @@ sub stop_servers($$) {
     delete $server->{'started_tinfo'};
     delete $server->{'started_opts'};
     delete $server->{'started_cnf'};
+    delete $server->{'restart_opts'};
   }
 }
 
@@ -6151,9 +6256,31 @@ sub start_servers($) {
     ndbcluster_start($cluster);
   }
 
+  my $server_id= 0;
+
   # Start mysqlds
   foreach my $mysqld ( mysqlds() )
   {
+    # Group Replication requires a local port to be open on
+    # each server in order to receive messages from the group,
+    # Store the reserved port in an environment variable
+    # SERVER_GR_PORT_X(where X is the server number).
+    $server_id++;
+    my $xcom_server= "SERVER_GR_PORT_".$server_id;
+
+    if (!$group_replication)
+    {
+      # Assigning error value '-1' to SERVER_GR_PORT_X environment variable,
+      # since the number of ports reserved per thread is not enough for
+      # allocating extra Group replication ports.
+      $ENV{$xcom_server}= -1;
+    }
+    else
+    {
+      my $xcom_port= $baseport + 9 + $server_id;
+      $ENV{$xcom_server}= $xcom_port;
+    }
+
     if ( $mysqld->{proc} )
     {
       # Already started
@@ -6383,6 +6510,7 @@ sub start_mysqltest ($) {
     $exe=  "strace";
     mtr_add_arg($args, "-o");
     mtr_add_arg($args, "%s/log/mysqltest.strace", $opt_vardir);
+    mtr_add_arg($args, "-f");
     mtr_add_arg($args, "$exe_mysqltest");
   }
 
@@ -6591,7 +6719,7 @@ sub gdb_arguments {
 	     "break main\n" .
 	     $runline);
 
-  if ( $opt_manual_gdb )
+  if ( $opt_manual_gdb || $opt_manual_boot_gdb )
   {
      print "\nTo start gdb for $type, type in another window:\n";
      print "gdb -cd $glob_mysql_test_dir -x $gdb_init_file $$exe\n";
@@ -6799,6 +6927,7 @@ sub strace_server_arguments {
 
   mtr_add_arg($args, "-o");
   mtr_add_arg($args, "%s/log/%s.strace", $opt_vardir, $type);
+  mtr_add_arg($args, "-f");
   mtr_add_arg($args, $$exe);
   $$exe= "strace";
 }
@@ -6831,26 +6960,24 @@ sub valgrind_client_arguments {
 sub valgrind_arguments {
   my $args= shift;
   my $exe=  shift;
+  my $report_prefix= shift;
 
-  if ( $opt_callgrind)
+  if (my @tool_list= grep(/^--tool=(memcheck|callgrind|massif)/, @valgrind_args))
   {
-    mtr_add_arg($args, "--tool=callgrind");
-    mtr_add_arg($args, "--base=$opt_vardir/log");
-  }
-  else
-  {
-    mtr_add_arg($args, "--tool=memcheck"); # From >= 2.1.2 needs this option
-    if($daemonize_mysqld)
+    # Get the value of the last specified --tool=<> argument to valgrind
+    my ($tool_name)= $tool_list[-1] =~ /(memcheck|callgrind|massif)$/;
+    if ($tool_name=~ /memcheck/)
     {
-      mtr_add_arg($args, "--leak-check=no");
+      $daemonize_mysqld ? mtr_add_arg($args, "--leak-check=no") :
+                          mtr_add_arg($args, "--leak-check=yes") ;
     }
     else
     {
-      mtr_add_arg($args, "--leak-check=yes");
+      $$exe=~ /.*[\/](.*)$/;
+      my $report_prefix= defined $report_prefix ? $report_prefix : $1;
+      mtr_add_arg($args, "--$tool_name-out-file=$opt_vardir/log/".
+                         "$report_prefix"."_$tool_name.out.%%p");
     }
-    mtr_add_arg($args, "--num-callers=16");
-    mtr_add_arg($args, "--suppressions=%s/valgrind.supp", $glob_mysql_test_dir)
-      if -f "$glob_mysql_test_dir/valgrind.supp";
   }
 
   # Add valgrind options, can be overriden by user
@@ -7158,6 +7285,8 @@ Options for debugging the product
   boot-dbx              Start bootstrap server in dbx
   boot-ddd              Start bootstrap server in ddd
   boot-gdb              Start bootstrap server in gdb
+  manual-boot-gdb       Let user manually start mysqld in gdb, during
+                        initialize process
   client-dbx            Start mysqltest client in dbx
   client-ddd            Start mysqltest client in ddd
   client-debugger=NAME  Start mysqltest in the selected debugger

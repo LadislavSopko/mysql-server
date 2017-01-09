@@ -88,8 +88,9 @@
           case PSI_BATCH_MODE_NONE:                           \
           {                                                   \
             PSI_table_locker *sub_locker= NULL;               \
+            PSI_table_locker_state reentrant_safe_state;      \
             sub_locker= PSI_TABLE_CALL(start_table_io_wait)   \
-              (& m_psi_locker_state, m_psi, OP, INDEX,        \
+              (& reentrant_safe_state, m_psi, OP, INDEX,      \
                __FILE__, __LINE__);                           \
             PAYLOAD                                           \
             if (sub_locker != NULL)                           \
@@ -1370,6 +1371,16 @@ void trans_register_ha(THD *thd, bool all, handlerton *ht_arg,
   Ha_trx_info *knownn_trans= trn_ctx->ha_trx_info(trx_scope);
   if (all)
   {
+    /*
+      Ensure no active backup engine data exists, unless the current transaction
+      is from replication and in active xa state.
+    */
+    DBUG_ASSERT(thd->ha_data[ht_arg->slot].ha_ptr_backup == NULL ||
+                (thd->get_transaction()->xid_state()->
+                 has_state(XID_STATE::XA_ACTIVE)));
+    DBUG_ASSERT(thd->ha_data[ht_arg->slot].ha_ptr_backup == NULL ||
+                (thd->is_binlog_applier() || thd->slave_thread));
+
     thd->server_status|= SERVER_STATUS_IN_TRANS;
     if (thd->tx_read_only)
       thd->server_status|= SERVER_STATUS_IN_TRANS_READONLY;
@@ -1557,6 +1568,7 @@ ha_check_and_coalesce_trx_read_only(THD *thd, Ha_trx_info *ha_list,
 
 int commit_owned_gtids(THD *thd, bool all, bool *need_clear_owned_gtid_ptr)
 {
+  DBUG_ENTER("commit_owned_gtids(...)");
   int error= 0;
 
   if ((!opt_bin_log || (thd->slave_thread && !opt_log_slave_updates)) &&
@@ -1564,6 +1576,14 @@ int commit_owned_gtids(THD *thd, bool all, bool *need_clear_owned_gtid_ptr)
       !thd->is_operating_gtid_table_implicitly &&
       !thd->is_operating_substatement_implicitly)
   {
+    /*
+      If the binary log is disabled for this thread (either by
+      log_bin=0 or sql_log_bin=0 or by log_slave_updates=0 for a
+      slave thread), then the statement will not be written to
+      the binary log. In this case, we should save its GTID into
+      mysql.gtid_executed table and @@GLOBAL.GTID_EXECUTED as it
+      did when binlog is enabled.
+    */
     if (thd->owned_gtid.sidno > 0)
     {
       error= gtid_state->save(thd);
@@ -1577,7 +1597,43 @@ int commit_owned_gtids(THD *thd, bool all, bool *need_clear_owned_gtid_ptr)
     *need_clear_owned_gtid_ptr= false;
   }
 
-  return error;
+  DBUG_RETURN(error);
+}
+
+
+/**
+  The function is a wrapper of commit_owned_gtids(...). It is invoked
+  at committing a partially failed statement or transaction.
+
+  @param thd  Thread context.
+
+  @retval -1 if error when persisting owned gtid.
+  @retval 0 if succeed to commit owned gtid.
+  @retval 1 if do not meet conditions to commit owned gtid.
+*/
+int commit_owned_gtid_by_partial_command(THD *thd)
+{
+  DBUG_ENTER("commit_owned_gtid_by_partial_command(THD *thd)");
+  bool need_clear_owned_gtid_ptr= false;
+  int ret= 0;
+
+  if (commit_owned_gtids(thd, true, &need_clear_owned_gtid_ptr))
+  {
+    /* Error when saving gtid into mysql.gtid_executed table. */
+    gtid_state->update_on_rollback(thd);
+    ret= -1;
+  }
+  else if (need_clear_owned_gtid_ptr)
+  {
+    gtid_state->update_on_commit(thd);
+    ret= 0;
+  }
+  else
+  {
+    ret= 1;
+  }
+
+  DBUG_RETURN(ret);
 }
 
 
@@ -1713,7 +1769,8 @@ int ha_commit_trans(THD *thd, bool all, bool ignore_global_read_lock)
       DEBUG_SYNC(thd, "ha_commit_trans_after_acquire_commit_lock");
     }
 
-    if (rw_trans && check_readonly(thd, true))
+    if (rw_trans && stmt_has_updated_trans_table(ha_info)
+        && check_readonly(thd, true))
     {
       ha_rollback_trans(thd, all);
       error= 1;
@@ -1818,23 +1875,22 @@ int ha_commit_low(THD *thd, bool all, bool run_after_commit)
   Transaction_ctx::enum_trx_scope trx_scope=
     all ? Transaction_ctx::SESSION : Transaction_ctx::STMT;
   Ha_trx_info *ha_info= trn_ctx->ha_trx_info(trx_scope), *ha_info_next;
-  bool restore_backup_trx= false;
 
   DBUG_ENTER("ha_commit_low");
 
   if (ha_info)
   {
+    bool restore_backup_ha_data= false;
     /*
-      binlog applier thread can execute XA COMMIT and it would
-      have to restore its local thread native transaction
-      context, previously saved at XA START.
+      At execution of XA COMMIT ONE PHASE binlog or slave applier
+      reattaches the engine ha_data to THD, previously saved at XA START.
     */
-    if (thd->lex->sql_command == SQLCOM_XA_COMMIT &&
-        thd->binlog_applier_has_detached_trx())
+    if (all && thd->rpl_unflag_detached_engine_ha_data())
     {
-      DBUG_ASSERT(all && static_cast<Sql_cmd_xa_commit*>(thd->lex->m_sql_cmd)->
+      DBUG_ASSERT(thd->lex->sql_command == SQLCOM_XA_COMMIT);
+      DBUG_ASSERT(static_cast<Sql_cmd_xa_commit*>(thd->lex->m_sql_cmd)->
                   get_xa_opt() == XA_ONE_PHASE);
-      restore_backup_trx= true;
+      restore_backup_ha_data= true;
     }
 
     for (; ha_info; ha_info= ha_info_next)
@@ -1848,14 +1904,8 @@ int ha_commit_low(THD *thd, bool all, bool run_after_commit)
       }
       thd->status_var.ha_commit_count++;
       ha_info_next= ha_info->next();
-
-      if (restore_backup_trx && ht->replace_native_transaction_in_thd)
-      {
-        void **trx_backup= thd_ha_data_backup(thd, ht);
-
-        ht->replace_native_transaction_in_thd(thd, *trx_backup, NULL);
-        *trx_backup= NULL;
-      }
+      if (restore_backup_ha_data)
+        reattach_engine_ha_data_to_thd(thd, ht);
       ha_info->reset(); /* keep it conveniently zero-filled */
     }
     trn_ctx->reset_scope(trx_scope);
@@ -1902,6 +1952,19 @@ int ha_rollback_low(THD *thd, bool all)
 
   if (ha_info)
   {
+    bool restore_backup_ha_data= false;
+    /*
+      Similarly to the commit case, the binlog or slave applier
+      reattaches the engine ha_data to THD.
+    */
+    if (all && thd->rpl_unflag_detached_engine_ha_data())
+    {
+      DBUG_ASSERT(trn_ctx->xid_state()->get_state() != XID_STATE::XA_NOTR ||
+                  thd->killed == THD::KILL_CONNECTION);
+
+      restore_backup_ha_data= true;
+    }
+
     for (; ha_info; ha_info= ha_info_next)
     {
       int err;
@@ -1913,6 +1976,8 @@ int ha_rollback_low(THD *thd, bool all)
       }
       thd->status_var.ha_rollback_count++;
       ha_info_next= ha_info->next();
+      if (restore_backup_ha_data)
+        reattach_engine_ha_data_to_thd(thd, ht);
       ha_info->reset(); /* keep it conveniently zero-filled */
     }
     trn_ctx->reset_scope(trx_scope);
@@ -1921,8 +1986,22 @@ int ha_rollback_low(THD *thd, bool all)
   /*
     Thanks to possibility of MDL deadlock rollback request can come even if
     transaction hasn't been started in any transactional storage engine.
+
+    It is possible to have a call of ha_rollback_low() while handling
+    failure from ha_prepare() and an error in Daignostics_area still
+    wasn't set. Therefore it is required to check that an error in
+    Diagnostics_area is set before calling the method XID_STATE::set_error().
+
+    If it wasn't done it would lead to failure of the assertion
+      DBUG_ASSERT(m_status == DA_ERROR)
+    in the method Diagnostics_area::mysql_errno().
+
+    In case ha_prepare is failed and an error wasn't set in Diagnostics_area
+    the error ER_XA_RBROLLBACK is set in the Diagnostics_area from
+    the method Sql_cmd_xa_prepare::trans_xa_prepare() when non-zero result code
+    returned by ha_prepare() is handled.
   */
-  if (all && thd->transaction_rollback_request)
+  if (all && thd->transaction_rollback_request && thd->is_error())
     trn_ctx->xid_state()->set_error(thd);
 
   (void) RUN_HOOK(transaction, after_rollback, (thd, all));
@@ -6720,7 +6799,7 @@ end:
 ha_rows DsMrr_impl::dsmrr_info(uint keyno, uint n_ranges, uint rows,
                                uint *bufsz, uint *flags, Cost_estimate *cost)
 {
-  ha_rows res __attribute__((unused));
+  ha_rows res MY_ATTRIBUTE((unused));
   uint def_flags= *flags;
   uint def_bufsz= *bufsz;
 
@@ -8147,6 +8226,7 @@ static bool my_eval_gcolumn_expr_helper(THD *thd, TABLE *table,
 {
   DBUG_ENTER("my_eval_gcolumn_expr_helper");
   DBUG_ASSERT(table && table->vfield);
+  DBUG_ASSERT(!thd->is_error());
 
   uchar *old_buf= table->record[0];
   repoint_field_to_record(table, old_buf, record);
@@ -8267,11 +8347,6 @@ bool handler::my_prepare_gcolumn_template(THD *thd,
                                           my_gcolumn_template_callback_t myc,
                                           void* ib_table)
 {
-  /*
-    This is a background thread, so we can re-initialize the main LEX, its
-    current content is not important.
-  */
-  DBUG_ASSERT(thd->system_thread == SYSTEM_THREAD_BACKGROUND);
   char path[FN_REFLEN + 1];
   bool was_truncated;
   build_table_filename(path, sizeof(path) - 1 - reg_ext_length,
@@ -8323,7 +8398,6 @@ bool handler::my_eval_gcolumn_expr_with_open(THD *thd,
                                              const MY_BITMAP *const fields,
                                              uchar *record)
 {
-  DBUG_ASSERT(thd->system_thread == SYSTEM_THREAD_BACKGROUND);
   bool retval= true;
   lex_start(thd);
 
@@ -8384,9 +8458,17 @@ bool handler::my_eval_gcolumn_expr(THD *thd, TABLE *table,
 
 struct HTON_NOTIFY_PARAMS
 {
+  HTON_NOTIFY_PARAMS(const MDL_key *mdl_key,
+                     ha_notification_type mdl_type)
+    : key(mdl_key), notification_type(mdl_type),
+      some_htons_were_notified(false),
+      victimized(false)
+  {}
+
   const MDL_key *key;
   const ha_notification_type notification_type;
   bool some_htons_were_notified;
+  bool victimized;
 };
 
 
@@ -8399,7 +8481,8 @@ notify_exclusive_mdl_helper(THD *thd, plugin_ref plugin, void *arg)
     HTON_NOTIFY_PARAMS *params= reinterpret_cast<HTON_NOTIFY_PARAMS*>(arg);
 
     if (hton->notify_exclusive_mdl(thd, params->key,
-                                   params->notification_type))
+                                   params->notification_type,
+                                   &params->victimized))
     {
       // Ignore failures from post event notification.
       if (params->notification_type == HA_NOTIFY_PRE_EVENT)
@@ -8422,6 +8505,8 @@ notify_exclusive_mdl_helper(THD *thd, plugin_ref plugin, void *arg)
                             lock is to be acquired/was released.
   @param notification_type  Indicates whether this is pre-acquire or
                             post-release notification.
+  @param victimized        'true' if locking failed as we were selected
+                            as a victim in order to avoid possible deadlocks.
 
   @note @see handlerton::notify_exclusive_mdl for details about
         calling convention and error reporting.
@@ -8431,12 +8516,15 @@ notify_exclusive_mdl_helper(THD *thd, plugin_ref plugin, void *arg)
 */
 
 bool ha_notify_exclusive_mdl(THD *thd, const MDL_key *mdl_key,
-                             ha_notification_type notification_type)
+                             ha_notification_type notification_type,
+                             bool *victimized)
 {
-  HTON_NOTIFY_PARAMS params = {mdl_key, notification_type, false};
+  HTON_NOTIFY_PARAMS params(mdl_key, notification_type);
+  *victimized = false;
   if (plugin_foreach(thd, notify_exclusive_mdl_helper,
                      MYSQL_STORAGE_ENGINE_PLUGIN, &params))
   {
+    *victimized = params.victimized;
     /*
       If some SE hasn't given its permission to acquire lock and some SEs
       has given their permissions, we need to notify the latter group about
@@ -8446,8 +8534,7 @@ bool ha_notify_exclusive_mdl(THD *thd, const MDL_key *mdl_key,
     if (notification_type == HA_NOTIFY_PRE_EVENT &&
         params.some_htons_were_notified)
     {
-      HTON_NOTIFY_PARAMS rollback_params = {mdl_key, HA_NOTIFY_POST_EVENT,
-                                            false};
+      HTON_NOTIFY_PARAMS rollback_params(mdl_key, HA_NOTIFY_POST_EVENT);
       (void) plugin_foreach(thd, notify_exclusive_mdl_helper,
                             MYSQL_STORAGE_ENGINE_PLUGIN, &rollback_params);
     }
@@ -8498,7 +8585,7 @@ notify_alter_table_helper(THD *thd, plugin_ref plugin, void *arg)
 bool ha_notify_alter_table(THD *thd, const MDL_key *mdl_key,
                            ha_notification_type notification_type)
 {
-  HTON_NOTIFY_PARAMS params = {mdl_key, notification_type, false};
+  HTON_NOTIFY_PARAMS params(mdl_key, notification_type);
 
   if (plugin_foreach(thd, notify_alter_table_helper,
                      MYSQL_STORAGE_ENGINE_PLUGIN, &params))
@@ -8512,8 +8599,7 @@ bool ha_notify_alter_table(THD *thd, const MDL_key *mdl_key,
     if (notification_type == HA_NOTIFY_PRE_EVENT &&
         params.some_htons_were_notified)
     {
-      HTON_NOTIFY_PARAMS rollback_params = {mdl_key, HA_NOTIFY_POST_EVENT,
-                                            false};
+      HTON_NOTIFY_PARAMS rollback_params(mdl_key, HA_NOTIFY_POST_EVENT);
       (void) plugin_foreach(thd, notify_alter_table_helper,
                             MYSQL_STORAGE_ENGINE_PLUGIN, &rollback_params);
     }

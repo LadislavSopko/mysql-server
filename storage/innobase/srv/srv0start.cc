@@ -323,7 +323,7 @@ DECLARE_THREAD(io_handler_thread)(
 /*********************************************************************//**
 Creates a log file.
 @return DB_SUCCESS or error code */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 create_log_file(
 /*============*/
@@ -520,7 +520,7 @@ create_log_files_rename(
 /*********************************************************************//**
 Opens a log file.
 @return DB_SUCCESS or error code */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 open_log_file(
 /*==========*/
@@ -2118,6 +2118,10 @@ files_checked:
 
 		purge_queue = trx_sys_init_at_db_start();
 
+		DBUG_EXECUTE_IF("check_no_undo",
+				ut_ad(purge_queue->empty());
+				);
+
 		/* The purge system needs to create the purge view and
 		therefore requires that the trx_sys is inited. */
 
@@ -2288,7 +2292,8 @@ files_checked:
 		server could crash in middle of key rotation. Some tablespace
 		didn't complete key rotation. Here, we will resume the
 		rotation. */
-		if (srv_force_recovery < SRV_FORCE_NO_LOG_REDO) {
+		if (!srv_read_only_mode
+		    && srv_force_recovery < SRV_FORCE_NO_LOG_REDO) {
 			fil_encryption_rotate();
 		}
 

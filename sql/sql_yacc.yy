@@ -733,6 +733,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, YYLTYPE **c, ulong *yystacksize);
 %token  ITERATE_SYM
 %token  JOIN_SYM                      /* SQL-2003-R */
 %token  JSON_SEPARATOR_SYM            /* MYSQL */
+%token  JSON_UNQUOTED_SEPARATOR_SYM   /* MYSQL */
 %token  JSON_SYM                      /* MYSQL */
 %token  KEYS
 %token  KEY_BLOCK_SIZE
@@ -2366,6 +2367,11 @@ create:
           ident_or_text OPTIONS_SYM '(' server_options_list ')'
           {
             Lex->sql_command= SQLCOM_CREATE_SERVER;
+            if ($3.length == 0)
+            {
+              my_error(ER_WRONG_VALUE, MYF(0), "server name", "");
+              MYSQL_YYABORT;
+            }
             Lex->server_options.m_server_name= $3;
             Lex->server_options.set_scheme($7);
             Lex->m_sql_cmd=
@@ -5486,6 +5492,12 @@ part_name:
           {
             partition_info *part_info= Lex->part_info;
             partition_element *p_elem= part_info->curr_part_elem;
+            if (check_string_char_length(to_lex_cstring($1), "", NAME_CHAR_LEN,
+                                         system_charset_info, true))
+            {
+              my_error(ER_TOO_LONG_IDENT, MYF(0), $1.str);
+              MYSQL_YYABORT;
+            }
             p_elem->partition_name= $1.str;
           }
         ;
@@ -5782,7 +5794,15 @@ sub_part_definition:
 
 sub_name:
           ident_or_text
-          { Lex->part_info->curr_part_elem->partition_name= $1.str; }
+          {
+            if (check_string_char_length(to_lex_cstring($1), "", NAME_CHAR_LEN,
+                                         system_charset_info, true))
+            {
+              my_error(ER_TOO_LONG_IDENT, MYF(0), $1.str);
+              MYSQL_YYABORT;
+            }
+            Lex->part_info->curr_part_elem->partition_name= $1.str;
+          }
         ;
 
 opt_part_options:
@@ -9547,6 +9567,14 @@ simple_expr:
               NEW_PTN Item_string(@$, $3.str, $3.length,
                                   YYTHD->variables.collation_connection);
             $$= NEW_PTN Item_func_json_extract(YYTHD, @$, $1, path);
+          }
+         | simple_ident JSON_UNQUOTED_SEPARATOR_SYM TEXT_STRING_literal
+          {
+            Item_string *path=
+              NEW_PTN Item_string(@$, $3.str, $3.length,
+                                  YYTHD->variables.collation_connection);
+            Item *extr= NEW_PTN Item_func_json_extract(YYTHD, @$, $1, path);
+            $$= NEW_PTN Item_func_json_unquote(@$, extr);
           }
         ;
 
