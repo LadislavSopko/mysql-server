@@ -87,4 +87,7 @@ pushd "%BUILD%\sql" && "%TRE_RDP%\bin\jom" install "%NUMJOBS%" && copy mysqld.li
 pushd "%BUILD%\libmysql" && "%TRE_RDP%\bin\jom" install "%NUMJOBS%" && popd
 pushd "%BUILD%\include" && "%TRE_RDP%\bin\jom" install "%NUMJOBS%" && popd
 
+:: install dll
+move "%TRE_RDP%\lib\libmysql.dll" "%TRE_RDP%\bin\libmysql.dll" 
+
 endlocal
