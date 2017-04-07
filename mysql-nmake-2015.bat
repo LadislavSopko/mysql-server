@@ -13,6 +13,7 @@ set P1=%~1
 set P2=%~2
 set P3=%~3
 set P4=%~4
+set P5=%~5
 
 if "%P4%"=="" goto blank_cmake
 
@@ -55,6 +56,17 @@ set PREFIX=E:\MySql
 
 :next 
 
+if "%P5%"=="" goto missing_build_tyupe
+
+set BUILD_TYPE=%~5
+goto work
+
+:missing_build_tyupe
+
+set BUILD_TYPE=RelWithDebInfo
+
+:work
+
 set NUMJOBS=-j4
 
 mkdir "%BUILD%"
@@ -78,7 +90,7 @@ cd /d "%BUILD%" && "%CMAKE_COMMAND%" "%REPO%" -G"NMake Makefiles JOM"^
  -DWITH_BOOST:PATH="%TRE_RDP%\include\boost-1_59"^
  -DTMPDIR:PATH="%PREFIX%\tmp"^
  -DCMAKE_INSTALL_PREFIX:PATH="%PREFIX%"^
- -DCMAKE_BUILD_TYPE:STRING="RelWithDebInfo"^
+ -DCMAKE_BUILD_TYPE:STRING="%BUILD_TYPE%"^
  -DMYSQL_PROJECT_NAME:STRING="MySQL"
 
 rem "%CMAKE_DIR%\cmake" --build "%BUILD%" --target INSTALL -- "%NUMJOBS%"
