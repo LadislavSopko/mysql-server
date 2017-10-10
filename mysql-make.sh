@@ -24,7 +24,7 @@ mkdir -p "$BUILD" && cd "$BUILD" && cmake "$REPO" -DCMAKE_INSTALL_PREFIX="$PREFI
  -DTMPDIR:PATH="$PREFIX\tmp"\
  -DCMAKE_INSTALL_PREFIX:PATH="$PREFIX"\
  -DCMAKE_BUILD_TYPE:STRING="RelWithDebInfo"\
- -DMYSQL_PROJECT_NAME:STRING="MySQL"
+ -DMYSQL_PROJECT_NAME:STRING="MySQL" 
  
  #full build 
  #cmake --build "$BUILD" --target install -- ${NUMJOBS}
