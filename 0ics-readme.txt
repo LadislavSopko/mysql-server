@@ -1,3 +1,6 @@
+10/10/2017  
+	-  failed test with different boost other then 1.59
+
 17/01/2017	5.7.17-0ics-boost-1.59 
 	- 	5.7.17-0ics-boost-1.59 return back to this, 1.63 function but it will be done in the future
 
